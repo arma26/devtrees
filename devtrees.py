@@ -202,7 +202,7 @@ def teardown(args, root):
     print('Resources:', len(resources), 'entries; regular-file bytes:',
           sum(row[4] for row in resources if stat.S_ISREG(row[1])))
     for row in resources:
-        print(repr(row[0]), oct(row[1]), row[4], row[6])
+        print(repr(row[0]), oct(row[1]), row[4], repr(row[6]))
     if not args.quarantine:
         print('Dry run: nothing moved. Use --quarantine for interactive approval.')
         return
