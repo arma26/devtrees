@@ -115,6 +115,39 @@ def add(args, root):
     print(destination)
 
 
+def repository(value, root):
+    original = Path(value).expanduser()
+    if original.is_symlink():
+        raise Refusal('select the repository directory, not a symlink')
+    path = inside(original, root)
+    if path == root or not (path / '.git').is_dir() or (path / '.git').is_symlink():
+        raise Refusal('expected an ordinary independent Git clone')
+    actual = git('rev-parse', '--show-toplevel', cwd=path, capture=True)
+    if not actual or Path(actual).resolve() != path:
+        raise Refusal('repository redirects its working directory')
+    return path
+
+
+def discover(args, root):
+    directory = inside(args.directory, root) if args.directory else configuration(root)[0]
+    def failed(error):
+        raise error
+    for base, directories, _ in os.walk(directory, followlinks=False, onerror=failed):
+        path = Path(base)
+        directories[:] = sorted(name for name in directories
+                                if name != '.git' and not (path / name).is_symlink())
+        if (path / '.git').exists():
+            directories[:] = []
+            print(repository(path, root))
+        elif (path / 'HEAD').is_file() and (path / 'objects').is_dir():
+            directories[:] = []  # A bare source is not a working environment.
+
+
+def push(args, root):
+    path = repository(args.path, root)
+    git('push', '--', args.remote, *args.refspec, cwd=path)
+
+
 def parser():
     result = argparse.ArgumentParser(description=__doc__)
     commands = result.add_subparsers(dest='command', required=True)
@@ -128,6 +161,14 @@ def parser():
     clone.add_argument('path')
     clone.add_argument('start', nargs='?')
     clone.set_defaults(handler=add)
+    listing = commands.add_parser('list', help='discover ordinary clones from the filesystem')
+    listing.add_argument('directory', nargs='?')
+    listing.set_defaults(handler=discover)
+    handoff = commands.add_parser('push', help='invoke native git push; never merge')
+    handoff.add_argument('path')
+    handoff.add_argument('remote')
+    handoff.add_argument('refspec', nargs='*')
+    handoff.set_defaults(handler=push)
     return result
 
 
