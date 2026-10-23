@@ -10,6 +10,8 @@ Provide worktree command parity so documentation, instructions, and scripts can 
 
 Devtrees is a thin orchestration layer over native Git commands: it supplies directory structure, configuration/environment variables, and execution context rather than reimplementing cloning, transfers, branching, or merging.
 
+The additional `devtrees init` command will create a new workspace directory, seed its default `.devtrees` with the target repository, and prepare it for immediate branch checkout without manual configuration edits. It will not require a `main` checkout or make the workspace itself a Git repository. See [workspace initialization](docs/design.md#workspace-initialization) for the planned contract.
+
 The intended reader is the user designing the future script and skill. Start with [the design](docs/design.md) for accepted requirements and unresolved compatibility issues. [The glossary](GLOSSARY.md) defines the domain terms.
 
 ## Motivation

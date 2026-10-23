@@ -14,7 +14,31 @@ Audience: the user designing a worktree-compatible clone manager. Purpose: separ
 - The checked-out branches are arbitrary. A `main` checkout is optional, not an integration prerequisite.
 - The CLI model should accommodate acting in the appropriate repository to push or merge, and returning to the prior location. Exact commands and caller-shell navigation behavior remain undecided.
 - Reuse native Git commands internally wherever possible. Devtrees supplies workspace structure, configuration/environment variables, repository selection, and automated directory context; it orchestrates Git rather than reimplementing Git behavior.
+- Add `devtrees init` to create a new workspace directory, seed a default `.devtrees` configuration, and prepare the workspace for immediate branch checkout through subsequent devtrees commands without manual configuration repair.
 - The likely deliverable is a script and skill intended to supersede worktree skills. Only design tracking is authorized now; implementation and bulk migration have not been authorized.
+
+## Workspace initialization
+
+`devtrees init` is an additional setup command, not a replacement for native `git init`: the workspace itself must remain a non-repository directory.
+
+Required outcome:
+
+- Create the requested new workspace directory without overwriting an existing destination.
+- Seed `.devtrees` with the default configuration and the actual repository source supplied or resolved during initialization. A placeholder source is not sufficient for successful ready-to-work initialization.
+- Prepare whatever minimal workspace state subsequent devtrees commands require, reusing native Git operations wherever needed.
+- Leave the workspace ready to create independent branch checkouts immediately, with no required `main` checkout or other mandatory working clone.
+- Keep the local bare repository optional; the exact opt-in syntax remains unspecified.
+- Report initialization failures without claiming readiness, overwriting pre-existing data, or automatically deleting retained partial work.
+
+Proposed invocation shape, not a finalized parser contract or an implemented command:
+
+```sh
+devtrees init <directory> <repository>
+cd <directory>
+devtrees add -b task-a ./task-a
+```
+
+Acceptance: after successful initialization, a subsequent `devtrees add` can resolve the repository through the generated `.devtrees` and create a usable independent clone without editing the configuration first. Exact default fields depend on the still-open configuration contract.
 
 ## Compatibility work remaining
 
