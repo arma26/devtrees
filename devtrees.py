@@ -193,6 +193,51 @@ def inventory(source):
     return rows
 
 
+def check_git_metadata(admin, references):
+    def hexadecimal(value, lengths):
+        return len(value) in lengths and all(c in '0123456789abcdef' for c in value)
+    files = {'HEAD', 'config', 'description', 'index', 'packed-refs', 'shallow',
+             'FETCH_HEAD', 'ORIG_HEAD', 'COMMIT_EDITMSG', 'info/exclude',
+             'info/refs', 'info/packs', 'info/commit-graph', 'objects/info/packs',
+             'objects/info/commit-graph', 'objects/pack/multi-pack-index',
+             'objects/info/commit-graphs/commit-graph-chain', 'logs/HEAD'}
+    files.update(references)
+    files.update('logs/' + name for name in references)
+    directories = {'objects', 'objects/info', 'objects/pack', 'refs',
+                   'refs/heads', 'refs/tags', 'refs/remotes', 'logs', 'logs/refs',
+                   'logs/refs/heads', 'logs/refs/remotes', 'info', 'hooks',
+                   'branches', 'objects/info/commit-graphs'}
+    for name in files:
+        directories.update(parent.as_posix() for parent in Path(name).parents
+                           if parent != Path('.'))
+    def failed(error):
+        raise error
+    for base, dirs, names in os.walk(admin, followlinks=False, onerror=failed):
+        for entry in dirs + names:
+            path = Path(base) / entry
+            name = path.relative_to(admin).as_posix()
+            parts = path.relative_to(admin).parts
+            allowed = not path.is_symlink()
+            if path.is_dir():
+                allowed = allowed and (name in directories or
+                    (len(parts) == 2 and parts[0] == 'objects' and hexadecimal(parts[1], {2})))
+            else:
+                standard = name in files
+                if len(parts) == 3 and parts[0] == 'objects':
+                    standard = standard or (hexadecimal(parts[1], {2}) and hexadecimal(parts[2], {38, 62}))
+                    stem, separator, suffix = entry.rpartition('.')
+                    if parts[1] == 'pack':
+                        standard = standard or (bool(separator) and stem.startswith('pack-') and
+                            hexadecimal(stem[5:], {40, 64}) and suffix in {'pack', 'idx', 'rev', 'bitmap'})
+                if len(parts) == 4 and parts[:3] == ('objects', 'info', 'commit-graphs'):
+                    stem, separator, suffix = entry.rpartition('.')
+                    standard = standard or (bool(separator) and stem.startswith('graph-') and
+                        hexadecimal(stem[6:], {40, 64}) and suffix == 'graph')
+                allowed = allowed and path.is_file() and standard
+            if not allowed:
+                raise Refusal('unrecognized Git metadata: ' + repr(name) + '. Keep or quarantine the clone')
+
+
 def removal_check(source, root):
     project, configured, _ = configuration(root, source.parent)
     hub_path = project / 'hub.git'
@@ -239,24 +284,9 @@ def removal_check(source, root):
            '--porcelain=v1', '-uall', '--ignored=matching', cwd=source, capture=True):
         raise Refusal('local changes or untracked or ignored files remain. Keep the clone')
     admin = source / '.git'
-    allowed = {'HEAD', 'config', 'description', 'hooks', 'info', 'objects',
-               'refs', 'logs', 'index', 'packed-refs', 'shallow', 'branches',
-               'FETCH_HEAD', 'ORIG_HEAD', 'COMMIT_EDITMSG'}
-    if any(path.name not in allowed or path.name.endswith('.lock') for path in admin.iterdir()):
-        raise Refusal('private Git data or an active operation remains. Keep the clone')
-    for directory in ('objects', 'refs', 'logs', 'hooks', 'info'):
-        if (admin / directory).is_symlink():
-            raise Refusal('Git storage must not redirect through a symlink')
-    if (admin / 'objects/info/alternates').exists():
-        raise Refusal('normal removal cannot verify shared object storage')
-    if (admin / 'branches').exists() and any((admin / 'branches').iterdir()):
-        raise Refusal('private legacy branch data remains. Keep or quarantine the clone')
-    if (admin / 'hooks').exists() and any((admin / 'hooks').iterdir()):
-        raise Refusal('local Git hooks remain. Keep or quarantine the clone')
-    if (admin / 'info').exists() and any(p.name not in {'exclude', 'refs', 'packs', 'commit-graph'} for p in (admin / 'info').iterdir()):
-        raise Refusal('private Git information remains. Keep or quarantine the clone')
     local_refs = git('for-each-ref', '--format=%(refname) %(objectname)',
                      cwd=source, capture=True).splitlines()
+    check_git_metadata(admin, {row.split(' ', 1)[0] for row in local_refs})
     objects = {git('rev-parse', '--verify', 'HEAD', cwd=source, capture=True)}
     for row in local_refs:
         name, oid = row.split(' ', 1)
