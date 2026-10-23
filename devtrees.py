@@ -217,8 +217,11 @@ def removal_check(source, root):
     origin = git('remote', 'get-url', 'origin', cwd=source, capture=True)
     if not Path(origin).is_absolute() or Path(origin).resolve() != hub:
         raise Refusal('the clone origin does not match the project hub')
-    if git('--no-optional-locks', 'status', '--porcelain=v1', '-uall',
-           '--ignored=matching', cwd=source, capture=True):
+    index = git('ls-files', '-v', '-z', cwd=source, capture=True).split('\0')
+    if any(entry and entry[0] != 'H' for entry in index):
+        raise Refusal('index flags can hide local changes. Keep the clone')
+    if git('--no-optional-locks', '-c', 'core.fsmonitor=false', 'status',
+           '--porcelain=v1', '-uall', '--ignored=matching', cwd=source, capture=True):
         raise Refusal('local changes or untracked or ignored files remain. Keep the clone')
     admin = source / '.git'
     allowed = {'HEAD', 'config', 'description', 'hooks', 'info', 'objects',
