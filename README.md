@@ -8,6 +8,8 @@ Design notes for a CLI that replaces `git worktree` command invocations in docum
 
 Provide worktree command parity so documentation, instructions, and scripts can replace the `git worktree` command prefix with `devtrees`. Change repository storage and workspace organization, not the user's development workflow. Any compatibility gap is an unresolved design obligation, not permission to change the goal.
 
+Devtrees is a thin orchestration layer over native Git commands: it supplies directory structure, configuration/environment variables, and execution context rather than reimplementing cloning, transfers, branching, or merging.
+
 The intended reader is the user designing the future script and skill. Start with [the design](docs/design.md) for accepted requirements and unresolved compatibility issues. [The glossary](GLOSSARY.md) defines the domain terms.
 
 ## Motivation

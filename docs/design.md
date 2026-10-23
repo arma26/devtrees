@@ -13,6 +13,7 @@ Audience: the user designing a worktree-compatible clone manager. Purpose: separ
 - A local `example.git` may be used as a bare repository, not a mirror. It may serve as both cache and authority for local branches; these roles are not exclusive. Its presence is not required.
 - The checked-out branches are arbitrary. A `main` checkout is optional, not an integration prerequisite.
 - The CLI model should accommodate acting in the appropriate repository to push or merge, and returning to the prior location. Exact commands and caller-shell navigation behavior remain undecided.
+- Reuse native Git commands internally wherever possible. Devtrees supplies workspace structure, configuration/environment variables, repository selection, and automated directory context; it orchestrates Git rather than reimplementing Git behavior.
 - The likely deliverable is a script and skill intended to supersede worktree skills. Only design tracking is authorized now; implementation and bulk migration have not been authorized.
 
 ## Compatibility work remaining
@@ -27,11 +28,13 @@ Map the full worktree interface: `add`, `list`, `remove`, `move`, `lock`, `unloc
 
 Preserve explicit destination paths, relative-path interpretation, exit statuses, stdout/stderr separation, quiet behavior, and parseable `list --porcelain` / `-z` output. Reconcile caller-specified paths with workspace-based defaults rather than silently relocating them. Upward `.devtrees` discovery is selected; its stopping and failure rules remain to be defined.
 
-### Cross-clone Git behavior
+### Native Git delegation
 
-Independent clones do not supply shared branch state merely by replacing the management command. In particular, an unchanged workflow can create a task checkout, commit there, return to another checkout, and run `git merge task-branch`. The required visibility of that task branch and its latest commit is the central unresolved compatibility problem.
+Use native `git clone`, branch/checkout operations, `git fetch`, `git push`, `git merge`, and Git inspection commands as the implementation primitives. The wrapper selects the relevant repositories, supplies configuration, and runs commands in their directory context. Git remains responsible for object transfer, ref-update checks, merge behavior, and conflict reporting.
 
-Choose a mechanism that satisfies the parity obligation for branch visibility and availability of commits across sibling repositories, or identify the precise unmet behavior if no compatible mechanism has been established. Do not silently treat a newly introduced manual fetch or integration command as identical behavior. Specify operation with and without the optional local bare repository, including unavailable sources, divergent branches, and concurrent writers.
+Cross-clone branch visibility is an orchestration and compatibility-test obligation, not justification for a bespoke replication engine or a separate synchronization product. Native transfer commands must make the required commits available at the appropriate operation boundary, with and without the optional bare repository. The exact sequence remains implementation work.
+
+Keep the verified limitation visible: independent clones do not automatically share refs, so matching the management command alone does not establish that an unchanged ordinary `git merge task-branch` sees a newly committed sibling branch. Do not claim that parity until the native command sequence has been exercised against the relevant workflow.
 
 ### Preservation and lifecycle
 
@@ -61,13 +64,12 @@ Discovery stops at the first `.devtrees` file encountered; it does not combine a
 
 The parity goal is settled. The remaining decisions concern mechanisms and genuinely new configuration behavior:
 
-1. Branch/ref coordination: provide the required visibility between independent clones without assuming that matching management commands alone supplies shared Git state. The mechanism and its failure behavior remain unselected.
-2. Configuration contract: choose declarative parsing versus shell evaluation, inherited-environment precedence, target-repository fields, relative-path bases, and missing/malformed/removed-config behavior.
-3. Discovery boundary: decide the proposed `devtrees_root` semantics and how upward traversal handles symlinks and invocation outside the boundary.
-4. Membership authority: select how commands identify and retain workspace membership, including moved or missing clones and explicit destinations. Hidden registry versus filesystem discovery is an implementation choice, not a reason to reopen worktree command parity.
-5. Compatibility and preservation: choose a Git baseline and resolve any conflict between destructive worktree flags and existing user preservation requirements. A clean clone may still contain unique committed history.
+1. Configuration contract: choose declarative parsing versus shell evaluation, inherited-environment precedence, target-repository fields, relative-path bases, and missing/malformed/removed-config behavior.
+2. Discovery boundary: decide the proposed `devtrees_root` semantics and how upward traversal handles symlinks and invocation outside the boundary.
+3. Membership authority: select how commands identify and retain workspace membership, including moved or missing clones and explicit destinations. Hidden registry versus filesystem discovery is an implementation choice, not a reason to reopen worktree command parity.
+4. Compatibility and preservation: choose a Git baseline and resolve any conflict between destructive worktree flags and existing user preservation requirements. A clean clone may still contain unique committed history.
 
-Exact flag support, exit statuses, and output formats should be derived from the chosen Git baseline, not repeatedly redesigned. Shell navigation, integration, and recovery mechanisms remain implementation work subject to the accepted parity goal. Implementation and bulk migration remain unauthorized.
+Exact flag support, exit statuses, and output formats should be derived from the chosen Git baseline, not repeatedly redesigned. Native Git orchestration, shell navigation, integration, and recovery mechanisms remain implementation work subject to the accepted parity goal, not a new synchronization-system design interview. Implementation and bulk migration remain unauthorized.
 
 ## Sources and limitations
 
