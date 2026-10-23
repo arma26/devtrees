@@ -99,7 +99,7 @@ def new_destination(value, root):
         raise Refusal('destination is a symlink')
     destination = inside(original, root)
     if destination == root or destination.exists():
-        raise Refusal('destination must be new; existing data is not overwritten')
+        raise Refusal('destination must be new. Existing data stays unchanged')
     return destination
 
 
