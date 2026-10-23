@@ -46,7 +46,7 @@ def git(*args, cwd, capture=False):
                             stderr=subprocess.PIPE if capture else None, text=True)
     if result.returncode:
         raise Refusal((result.stderr or '').strip() or 'git command failed')
-    return result.stdout.strip() if capture else None
+    return result.stdout.removesuffix('\n') if capture else None
 
 
 def source_value(value, base):
