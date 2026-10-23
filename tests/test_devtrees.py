@@ -317,6 +317,20 @@ class StorageTests(unittest.TestCase):
         self.assert_removal_refused(clone)
         self.assertEqual((clone / 'tracked.txt').read_text(), 'initial\n')
 
+    def test_private_object_information_refuses_normal_removal(self):
+        _, clone = self.pushed_clone()
+        directory = clone / '.git/objects/info'
+        directory.mkdir(exist_ok=True)
+        (directory / 'local-notes.txt').write_text('private object notes\n')
+        self.assert_removal_refused(clone)
+
+    def test_private_log_information_refuses_normal_removal(self):
+        _, clone = self.pushed_clone()
+        directory = clone / '.git/logs'
+        directory.mkdir(exist_ok=True)
+        (directory / 'local-notes.txt').write_text('private log notes\n')
+        self.assert_removal_refused(clone)
+
     def test_private_git_data_refuses_normal_removal(self):
         _, clone = self.pushed_clone()
         (clone / '.git/local-notes.txt').write_text('private notes\n')
