@@ -7,10 +7,12 @@ import os
 from pathlib import Path
 import re
 import shlex
+import shutil
 import stat
 import subprocess
 import sys
 import uuid
+from typing import Literal, Optional, overload
 
 
 class Refusal(Exception):
@@ -35,7 +37,15 @@ def inside(value, root):
     return path
 
 
-def git(*args, cwd, capture=False):
+@overload
+def git(*args, cwd, capture: Literal[True], data: Optional[str] = None) -> str: ...
+
+
+@overload
+def git(*args, cwd, capture: Literal[False] = False, data: Optional[str] = None) -> None: ...
+
+
+def git(*args, cwd, capture=False, data=None):
     env = os.environ.copy()
     for name in ('GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE',
                  'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES',
@@ -43,7 +53,7 @@ def git(*args, cwd, capture=False):
         env.pop(name, None)
     result = subprocess.run(['git', *map(str, args)], cwd=cwd, env=env,
                             stdout=subprocess.PIPE if capture else None,
-                            stderr=subprocess.PIPE if capture else None, text=True)
+                            stderr=subprocess.PIPE if capture else None, text=True, input=data)
     if result.returncode:
         raise Refusal((result.stderr or '').strip() or 'git command failed')
     return result.stdout.removesuffix('\n') if capture else None
@@ -57,8 +67,8 @@ def source_value(value, base):
     return str((base / Path(value).expanduser()).resolve())
 
 
-def configuration(root):
-    directory = Path.cwd().resolve()
+def configuration(root, start=None):
+    directory = Path(start).resolve() if start is not None else Path.cwd().resolve()
     while True:
         config = directory / '.devtrees'
         if config.exists() or config.is_symlink():
@@ -183,8 +193,103 @@ def inventory(source):
     return rows
 
 
+def removal_check(source, root):
+    project, configured, _ = configuration(root, source.parent)
+    hub_path = project / 'hub.git'
+    if hub_path.is_symlink() or not hub_path.is_dir():
+        raise Refusal('the project hub is missing or is a symlink')
+    hub = inside(hub_path, root)
+    if not Path(configured).is_absolute() or Path(configured).resolve() != hub:
+        raise Refusal('configuration does not select this project hub')
+    if source not in project.parents and project not in source.parents:
+        raise Refusal('the selected clone is outside its project')
+    if source == project or source == hub or source in hub.parents:
+        raise Refusal('normal removal cannot select the project or hub')
+    for parent in source.parents:
+        if parent == project:
+            break
+        if (parent / '.git').exists():
+            raise Refusal('normal removal cannot select a nested repository')
+    if git('rev-parse', '--is-bare-repository', cwd=hub, capture=True) != 'true':
+        raise Refusal('the project hub is not a bare repository')
+    if git('rev-parse', '--is-shallow-repository', cwd=hub, capture=True) != 'false':
+        raise Refusal('normal removal requires a full-history hub')
+    origin = git('remote', 'get-url', 'origin', cwd=source, capture=True)
+    if not Path(origin).is_absolute() or Path(origin).resolve() != hub:
+        raise Refusal('the clone origin does not match the project hub')
+    if git('--no-optional-locks', 'status', '--porcelain=v1', '-uall',
+           '--ignored=matching', cwd=source, capture=True):
+        raise Refusal('local changes or untracked or ignored files remain. Keep the clone')
+    admin = source / '.git'
+    allowed = {'HEAD', 'config', 'description', 'hooks', 'info', 'objects',
+               'refs', 'logs', 'index', 'packed-refs', 'shallow', 'branches',
+               'FETCH_HEAD', 'ORIG_HEAD', 'COMMIT_EDITMSG'}
+    if any(path.name not in allowed or path.name.endswith('.lock') for path in admin.iterdir()):
+        raise Refusal('private Git data or an active operation remains. Keep the clone')
+    for directory in ('objects', 'refs', 'logs', 'hooks', 'info'):
+        if (admin / directory).is_symlink():
+            raise Refusal('Git storage must not redirect through a symlink')
+    if (admin / 'objects/info/alternates').exists():
+        raise Refusal('normal removal cannot verify shared object storage')
+    if (admin / 'hooks').exists() and any(not p.name.endswith('.sample') for p in (admin / 'hooks').iterdir()):
+        raise Refusal('local Git hooks remain. Keep or quarantine the clone')
+    if (admin / 'info').exists() and any(p.name not in {'exclude', 'refs', 'packs', 'commit-graph'} for p in (admin / 'info').iterdir()):
+        raise Refusal('private Git information remains. Keep or quarantine the clone')
+    local_refs = git('for-each-ref', '--format=%(refname) %(objectname)',
+                     cwd=source, capture=True).splitlines()
+    objects = {git('rev-parse', '--verify', 'HEAD', cwd=source, capture=True)}
+    for row in local_refs:
+        name, oid = row.split(' ', 1)
+        if name == 'refs/stash':
+            raise Refusal('a local stash remains. Keep or quarantine the clone')
+        if not name.startswith('refs/remotes/'):
+            retained = git('show-ref', '--verify', '--hash', name, cwd=hub, capture=True)
+            if not name.startswith('refs/heads/') and retained != oid:
+                raise Refusal('a local Git reference differs from the hub')
+        objects.add(oid)
+    objects.update(git('reflog', 'show', '--all', '--format=%H', cwd=source, capture=True).splitlines())
+    unreachable = git('fsck', '--full', '--unreachable', '--no-progress',
+                      cwd=source, capture=True).splitlines()
+    for row in unreachable:
+        fields = row.split()
+        if len(fields) != 3 or fields[0] != 'unreachable':
+            raise Refusal('Git object verification returned an unsupported result')
+        objects.add(fields[2])
+    retained_refs = git('for-each-ref', '--format=%(objectname)', cwd=hub, capture=True).splitlines()
+    if not retained_refs:
+        raise Refusal('the hub has no retained references')
+    revisions = sorted(objects) + ['^' + oid for oid in retained_refs]
+    if git('rev-list', '--objects', '--no-object-names', '--stdin', cwd=hub,
+           capture=True, data='\n'.join(revisions) + '\n'):
+        raise Refusal('the hub does not retain all local work. Push or preserve it first')
+    if not shutil.rmtree.avoids_symlink_attacks:
+        raise Refusal('this platform lacks safe directory removal support')
+    selected = source.lstat()
+    hub_info = hub.lstat()
+    return (project, hub, selected.st_dev, selected.st_ino,
+            hub_info.st_dev, hub_info.st_ino, tuple(retained_refs),
+            (project / '.devtrees').read_bytes())
+
+
+def remove_preserved(source, root):
+    checked = removal_check(source, root)
+    resources = inventory(source)
+    if any(row[2] != checked[2] for row in resources):
+        raise Refusal('normal removal cannot cross a filesystem boundary')
+    if removal_check(repository(source, root), root) != checked or inventory(source) != resources:
+        raise Refusal('the clone or hub changed after inspection. Keep the clone')
+    shutil.rmtree(source)
+    if source.exists() or source.is_symlink():
+        raise Refusal('removal was not verified. Inspect the clone and hub')
+    print('Removed:', repr(str(source)))
+    print('Hub retained:', repr(str(checked[1])))
+
+
 def teardown(args, root):
     source = repository(args.path, root)
+    if not args.dry_run and not args.quarantine:
+        remove_preserved(source, root)
+        return
     store = inside(root / '.devtrees-quarantine', root)
     if store == source or source in store.parents:
         raise Refusal('quarantine storage cannot be inside the selected clone')
@@ -210,7 +315,7 @@ def teardown(args, root):
     for row in resources:
         print(repr(row[0]), oct(row[1]), row[4], repr(row[6]))
     if not args.quarantine:
-        print('Dry run: nothing moved. Use --quarantine for interactive approval.')
+        print('Dry run: nothing moved. Normal removal requires preserved work. Quarantine requires terminal approval.')
         return
     if not sys.stdin.isatty():
         raise Refusal('quarantine requires a real terminal; noninteractive approval is refused')
@@ -234,14 +339,14 @@ def teardown(args, root):
 
 
 def parser():
-    result = argparse.ArgumentParser(description=__doc__)
+    result = argparse.ArgumentParser(description='Create independent task clones around a bare Git hub.')
     commands = result.add_subparsers(dest='command', required=True)
-    init = commands.add_parser('init', help='create sourceable workspace configuration')
+    init = commands.add_parser('init', help='create a workspace and a full-history bare hub')
     init.add_argument('directory')
     init.add_argument('repository')
     init.add_argument('--clone-mode', choices=('shallow', 'full'), default='shallow')
     init.set_defaults(handler=setup)
-    clone = commands.add_parser('add', help='create an ordinary independent Git clone')
+    clone = commands.add_parser('add', help='create an independent task clone')
     clone.add_argument('-b', '--branch')
     clone.add_argument('path')
     clone.add_argument('start', nargs='?')
@@ -254,7 +359,7 @@ def parser():
     handoff.add_argument('remote')
     handoff.add_argument('refspec', nargs='*')
     handoff.set_defaults(handler=push)
-    remove = commands.add_parser('remove', aliases=['teardown'], help='dry-run or quarantine a clone')
+    remove = commands.add_parser('remove', aliases=['teardown'], help='remove a preserved clone, inspect it, or quarantine it')
     remove.add_argument('path')
     mode = remove.add_mutually_exclusive_group()
     mode.add_argument('--dry-run', action='store_true')
