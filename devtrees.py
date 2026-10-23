@@ -99,10 +99,16 @@ def setup(args, root):
     git('ls-remote', '--', source, cwd=Path.cwd(), capture=True)
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.mkdir()
+    hub = destination / 'hub.git'
+    git('clone', '--bare', '--no-local', '--no-hardlinks', '--reject-shallow',
+        '--', source, hub, cwd=destination)
     with (destination / '.devtrees').open('x') as stream:
-        stream.write('export devtrees_repo=' + shlex.quote(source) + '\n')
+        stream.write('export devtrees_repo=' + shlex.quote(str(hub)) + '\n')
         stream.write('export devtrees_clone_mode=' + shlex.quote(args.clone_mode) + '\n')
     print(destination)
+    print('Hub:', hub)
+    print('In the original checkout, register this additional remote:')
+    print('git remote add devtrees ' + shlex.quote(str(hub)))
 
 
 def add(args, root):
