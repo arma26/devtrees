@@ -1,12 +1,12 @@
-# Clone workspaces
+# Devtrees
 
 Design notes for a CLI that replaces `git worktree` command invocations in documentation, instructions, and scripts while using ordinary independent clones instead of linked worktrees.
 
-**Status:** design only. No CLI or skill is implemented. The working project name is not a selected executable name.
+**Status:** design only. The selected project and CLI name is `devtrees`. No CLI or skill is implemented.
 
 ## Goal
 
-Preserve familiar arguments, command behavior, and script-facing output wherever compatible with independent repositories. Change repository storage and workspace organization, not the user's development workflow.
+Provide worktree command parity so documentation, instructions, and scripts can replace the `git worktree` command prefix with `devtrees`. Change repository storage and workspace organization, not the user's development workflow. Any compatibility gap is an unresolved design obligation, not permission to change the goal.
 
 The intended reader is the user designing the future script and skill. Start with [the design](docs/design.md) for accepted requirements and unresolved compatibility issues. [The glossary](GLOSSARY.md) defines the domain terms.
 
@@ -18,11 +18,11 @@ The user reports worktree-related failures in relative scripts, linking, contain
 
 ```text
 workspace/                 # not a repository
-├── .env                   # example declaration: GITREPO='file:///example.git'
+├── .devtrees              # config: environment definitions and target repository
 ├── example.git/            # optional local bare repository
 ├── branch-a/               # ordinary independent clone
 ├── branch-b/               # ordinary independent clone
 └── branch-c/               # ordinary independent clone
 ```
 
-The example URI is preserved from the design discussion; path resolution is not yet specified. No particular checkout, including `main`, is required.
+Commands discover `.devtrees` by walking upward from the current directory, including from deeply nested directories inside a clone. No particular checkout, including `main`, is required. An optional shell variable named `devtrees_root` has been proposed to bound discovery; its semantics are not settled.

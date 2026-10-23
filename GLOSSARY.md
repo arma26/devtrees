@@ -1,4 +1,4 @@
-# Clone workspaces
+# Devtrees
 
 A workspace groups independent development checkouts while preserving familiar worktree-management workflows.
 
@@ -7,7 +7,7 @@ A workspace groups independent development checkouts while preserving familiar w
 **Workspace**:
 A non-repository directory containing related working clones and their workspace configuration.
 
-**Working clone**:
+**Devtree**:
 An independent repository used for development within a workspace. A workspace does not require a designated main checkout.
 _Avoid_: Linked worktree
 
