@@ -214,6 +214,21 @@ def removal_check(source, root):
         raise Refusal('the project hub is not a bare repository')
     if git('rev-parse', '--is-shallow-repository', cwd=hub, capture=True) != 'false':
         raise Refusal('normal removal requires a full-history hub')
+    actual_hub = git('rev-parse', '--absolute-git-dir', cwd=hub, capture=True)
+    if Path(actual_hub).resolve() != hub:
+        raise Refusal('the hub redirects its Git storage')
+    if (hub / 'objects').is_symlink() or (hub / 'objects/info/alternates').exists():
+        raise Refusal('the hub uses shared or redirected object storage')
+    for directory, dirs, files in os.walk(hub / 'objects', followlinks=False):
+        if any((Path(directory) / name).is_symlink() for name in dirs + files):
+            raise Refusal('the hub redirects object storage through a symlink')
+        if any(name.endswith('.promisor') for name in files):
+            raise Refusal('the hub depends on promised objects')
+    try:
+        git('fsck', '--full', '--strict', '--no-reflogs', '--no-progress',
+            cwd=hub, capture=True)
+    except Refusal as error:
+        raise Refusal('hub object verification failed. Keep the clone') from error
     origin = git('remote', 'get-url', 'origin', cwd=source, capture=True)
     if not Path(origin).is_absolute() or Path(origin).resolve() != hub:
         raise Refusal('the clone origin does not match the project hub')
@@ -252,8 +267,8 @@ def removal_check(source, root):
             if not name.startswith('refs/heads/') and retained != oid:
                 raise Refusal('a local Git reference differs from the hub')
         objects.add(oid)
-    objects.update(git('reflog', 'show', '--all', '--format=%H', cwd=source, capture=True).splitlines())
-    unreachable = git('fsck', '--full', '--unreachable', '--no-progress',
+    unreachable = git('fsck', '--full', '--strict', '--no-reflogs',
+                      '--unreachable', '--no-progress',
                       cwd=source, capture=True).splitlines()
     for row in unreachable:
         fields = row.split()
