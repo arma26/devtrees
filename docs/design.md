@@ -8,14 +8,27 @@ Audience: the user designing a worktree-compatible clone manager. Purpose: separ
 - Replace the `git worktree` command prefix in documentation, instructions, and scripts with `devtrees`. Worktree parity and drop-in command replacement are the design goal, not open product questions. Do not intercept Git's built-in command. Any incompatibility must remain an explicit unresolved obligation rather than silently narrowing the goal.
 - Use ordinary independent full repositories, not linked worktrees, for development checkouts.
 - Organize working clones under a workspace directory that is not itself a repository.
-- A `.devtrees` configuration file supersedes the earlier `.env` proposal. It defines environment variables and identifies the target repository to replicate. The earlier repository declaration example was `GITREPO='file:///example.git'`; exact syntax, required fields, precedence, and relative-path interpretation remain unspecified.
+- A `.devtrees` configuration file supersedes the earlier `.env` proposal. It uses shell-sourceable environment syntax so subagents and containers can source it directly. It defines environment variables and identifies the target repository to replicate. Generated configuration should use exported assignments so child processes receive the values. The earlier repository declaration example was `GITREPO='file:///example.git'`; the complete fields and relative-path interpretation remain unspecified.
 - Discover `.devtrees` by walking upward through parent directories from the invocation directory until a configuration file is found. Discovery must work at arbitrary depth within a clone; a Git repository boundary must not by itself stop the search.
+- The nearest `.devtrees` wins. Stop at that file rather than combining ancestor configurations.
 - A local `example.git` may be used as a bare repository, not a mirror. It may serve as both cache and authority for local branches; these roles are not exclusive. Its presence is not required.
 - The checked-out branches are arbitrary. A `main` checkout is optional, not an integration prerequisite.
 - The CLI model should accommodate acting in the appropriate repository to push or merge, and returning to the prior location. Exact commands and caller-shell navigation behavior remain undecided.
 - Reuse native Git commands internally wherever possible. Devtrees supplies workspace structure, configuration/environment variables, repository selection, and automated directory context; it orchestrates Git rather than reimplementing Git behavior.
 - Add `devtrees init` to create a new workspace directory, seed a default `.devtrees` configuration, and prepare the workspace for immediate branch checkout through subsequent devtrees commands without manual configuration repair.
 - The likely deliverable is a script and skill intended to supersede worktree skills. Only design tracking is authorized now; implementation and bulk migration have not been authorized.
+
+## Shell-sourceable configuration
+
+Format example, not a real repository location or a complete default configuration:
+
+```sh
+export GITREPO='file:///example.git'
+```
+
+Subagents or container shells can source the selected file using ordinary shell syntax. Exported assignments make the values available to child commands. Prefer portable shell syntax in generated configuration so consumers do not require a particular interactive shell.
+
+This supersedes the earlier assistant recommendation that the format be restricted to a data-only parser. It does not by itself settle automatic execution of arbitrary discovered files by the CLI. Sourcing shell code requires a trusted file; discovery is not a sandbox or a trust check. The CLI loading mechanism and trust handling remain to be specified without inventing custom variable-precedence semantics.
 
 ## Workspace initialization
 
@@ -88,7 +101,7 @@ Discovery stops at the first `.devtrees` file encountered; it does not combine a
 
 The parity goal is settled. The remaining decisions concern mechanisms and genuinely new configuration behavior:
 
-1. Configuration contract: choose declarative parsing versus shell evaluation, inherited-environment precedence, target-repository fields, relative-path bases, and missing/malformed/removed-config behavior.
+1. Configuration contract: the shell-sourceable environment format and nearest-file selection are settled. Complete the target-repository fields, relative-path bases, CLI loading/trust handling, and missing/malformed/removed-config behavior. Do not reopen the file-format decision or imply that the earlier assistant defaults were all approved.
 2. Discovery boundary: decide the proposed `devtrees_root` semantics and how upward traversal handles symlinks and invocation outside the boundary.
 3. Membership authority: select how commands identify and retain workspace membership, including moved or missing clones and explicit destinations. Hidden registry versus filesystem discovery is an implementation choice, not a reason to reopen worktree command parity.
 4. Compatibility and preservation: choose a Git baseline and resolve any conflict between destructive worktree flags and existing user preservation requirements. A clean clone may still contain unique committed history.

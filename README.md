@@ -29,4 +29,4 @@ workspace/                 # not a repository
 └── branch-c/               # ordinary independent clone
 ```
 
-Commands discover `.devtrees` by walking upward from the current directory, including from deeply nested directories inside a clone. No particular checkout, including `main`, is required. An optional shell variable named `devtrees_root` has been proposed to bound discovery; its semantics are not settled.
+Commands discover `.devtrees` by walking upward from the current directory, including from deeply nested directories inside a clone. The nearest file wins; ancestor configurations are not combined. The file uses shell-sourceable environment syntax so subagents and containers can source it directly. No particular checkout, including `main`, is required. An optional shell variable named `devtrees_root` has been proposed to bound discovery; its semantics are not settled.
