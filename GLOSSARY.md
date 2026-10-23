@@ -4,6 +4,9 @@ A workspace groups independent development checkouts while preserving familiar w
 
 ## Language
 
+**Operating root**:
+The user-selected directory that bounds where Devtrees may discover and manage workspaces and development repositories.
+
 **Workspace**:
 A non-repository directory containing related working clones and their workspace configuration.
 

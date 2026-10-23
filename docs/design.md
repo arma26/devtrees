@@ -11,6 +11,8 @@ Audience: the user designing a worktree-compatible clone manager. Purpose: separ
 - A `.devtrees` configuration file supersedes the earlier `.env` proposal. It uses shell-sourceable environment syntax so subagents and containers can source it directly. It defines environment variables and identifies the target repository to replicate. Generated configuration should use exported assignments so child processes receive the values. The earlier repository declaration example was `GITREPO='file:///example.git'`; the complete fields and relative-path interpretation remain unspecified.
 - Discover `.devtrees` by walking upward through parent directories from the invocation directory until a configuration file is found. Discovery must work at arbitrary depth within a clone; a Git repository boundary must not by itself stop the search.
 - The nearest `.devtrees` wins. Stop at that file rather than combining ancestor configurations.
+- `devtrees_root` is supplied by the user through their shell environment, typically exported from their shell configuration. It is the mandatory operating boundary, not merely a discovery hint. Devtrees must not manage paths or execute repository operations in directories outside it.
+- Scripts must run in shell strict mode, explicitly validate required variables before use, and fail closed when `devtrees_root` is unset, empty, or invalid. Never fall back to the current directory, home directory, or filesystem root.
 - A local `example.git` may be used as a bare repository, not a mirror. It may serve as both cache and authority for local branches; these roles are not exclusive. Its presence is not required.
 - The checked-out branches are arbitrary. A `main` checkout is optional, not an integration prerequisite.
 - The CLI model should accommodate acting in the appropriate repository to push or merge, and returning to the prior location. Exact commands and caller-shell navigation behavior remain undecided.
@@ -81,9 +83,28 @@ Clones can contain unique committed history as well as uncommitted and ignored f
 
 Validate ordinary Git operations when only a working clone is mounted into a container. Check for external object-store dependencies and define clone behavior that does not require access to another repository's filesystem. Validate the user's actual scripts, linking tools, and package-manager cache workflows before claiming those problems are resolved. Define treatment of submodules, Git LFS, configuration, and hooks rather than assuming ordinary clone defaults reproduce all worktree behavior.
 
-## Proposed discovery boundary
+## Operating boundary and strict shell execution
 
-The user proposed an optional globally defined shell environment variable named `devtrees_root` to prevent discovery from walking outside the workspaces directory. Preserve that spelling. It is a search-boundary proposal, not authorization to restrict every operation to that directory.
+The user configures the exact environment variable `devtrees_root` in their shell configuration. It is a required operating boundary. Workspace configuration cannot replace or widen it.
+
+Illustrative shell configuration, not a requirement to use this directory:
+
+```sh
+export devtrees_root="$HOME/workspaces"
+```
+
+Required behavior:
+
+- Validate the inherited root before discovery or any repository mutation. Unset, empty, nonexistent, or otherwise unusable values produce a clear nonzero failure, with no fallback path.
+- Discover the nearest `.devtrees` only within the root, including a configuration at the root itself. Never search its parent.
+- Validate all managed workspace paths, repository execution directories, and operation destinations against the boundary, including `init`, `add`, `move`, removal, repair, and integration targets. An explicit argument does not bypass the boundary.
+- Check actual path containment, not string-prefix similarity. Account for `..`, symlinks, and not-yet-created destinations so a path cannot escape the root. Invocation outside the root must fail rather than search or operate there.
+- Preserve the validated boundary across configuration loading. A discovered `.devtrees` must not silently overwrite or unset the shell-supplied root and thereby change authority.
+- Use strict execution in the script's own shell context; do not change the invoking interactive shell's options merely to perform an operation. For Bash, the intended strict-mode baseline is `set -euo pipefail`.
+- Validate required values with explicit diagnostics; guard optional variable expansions so nounset does not turn legitimate absence into an accidental failure. Quote path expansions, distinguish expected nonzero Git statuses from failures, and check consequential command results rather than relying on errexit alone.
+- Report partial failures and preserve recoverable data. Strict mode is not a rollback mechanism and does not authorize cleanup or deletion.
+
+These are implementation and acceptance requirements, not an implemented filesystem sandbox. Sourceable shell configuration is executable when sourced; arbitrary trusted configuration, Git hooks, and external commands are not confined by a path check. Keep that trust boundary explicit rather than claiming strict mode or `devtrees_root` supplies OS-level isolation.
 
 Illustrative layout, not a fixed path requirement:
 
@@ -95,14 +116,14 @@ workspaces/
     └── branch-b/
 ```
 
-Discovery stops at the first `.devtrees` file encountered; it does not combine ancestor files. The proposed boundary variable's adoption, inclusive boundary behavior, unset/invalid/outside-root cases, and symbolic-link treatment remain unresolved. Missing or malformed configuration must not be silently equated with an approved default; removal of configuration must not imply permission to delete or modify retained clones.
+Discovery stops at the first `.devtrees` file encountered; it does not combine ancestor files. Missing or malformed configuration must not be silently equated with an approved default. Removing configuration or unsetting `devtrees_root` withdraws the ability to manage those paths through devtrees; it does not delete, reset, or modify retained clones. Restoring valid configuration can make them accessible again.
 
 ## Remaining design decisions
 
 The parity goal is settled. The remaining decisions concern mechanisms and genuinely new configuration behavior:
 
 1. Configuration contract: the shell-sourceable environment format and nearest-file selection are settled. Complete the target-repository fields, relative-path bases, CLI loading/trust handling, and missing/malformed/removed-config behavior. Do not reopen the file-format decision or imply that the earlier assistant defaults were all approved.
-2. Discovery boundary: decide the proposed `devtrees_root` semantics and how upward traversal handles symlinks and invocation outside the boundary.
+2. Boundary enforcement is settled policy; implement and test strict-mode validation and canonical containment, including unset/empty variables, outside-root invocation, symlink escapes, and attempts by workspace configuration to alter the boundary.
 3. Membership authority: select how commands identify and retain workspace membership, including moved or missing clones and explicit destinations. Hidden registry versus filesystem discovery is an implementation choice, not a reason to reopen worktree command parity.
 4. Compatibility and preservation: choose a Git baseline and resolve any conflict between destructive worktree flags and existing user preservation requirements. A clean clone may still contain unique committed history.
 
