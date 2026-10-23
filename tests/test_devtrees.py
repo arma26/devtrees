@@ -277,6 +277,20 @@ class StorageTests(unittest.TestCase):
         (clone / 'tracked.txt').write_text('hidden local work\n')
         self.assert_removal_refused(clone)
 
+    def test_private_legacy_branch_data_refuses_normal_removal(self):
+        _, clone = self.pushed_clone()
+        directory = clone / '.git/branches'
+        directory.mkdir(exist_ok=True)
+        (directory / 'local-notes.txt').write_text('private notes\n')
+        self.assert_removal_refused(clone)
+
+    def test_private_sample_hook_refuses_normal_removal(self):
+        _, clone = self.pushed_clone()
+        directory = clone / '.git/hooks'
+        directory.mkdir(exist_ok=True)
+        (directory / 'private-work.sample').write_text('private unfinished hook\n')
+        self.assert_removal_refused(clone)
+
     def test_private_git_data_refuses_normal_removal(self):
         _, clone = self.pushed_clone()
         (clone / '.git/local-notes.txt').write_text('private notes\n')
