@@ -265,6 +265,18 @@ class StorageTests(unittest.TestCase):
         self.assert_removal_refused(clone)
         self.assertTrue((workspace / 'hub.git').is_dir())
 
+    def test_assume_unchanged_cannot_hide_local_work_from_removal(self):
+        _, clone = self.pushed_clone()
+        self.git('-C', str(clone), 'update-index', '--assume-unchanged', 'tracked.txt')
+        (clone / 'tracked.txt').write_text('hidden local work\n')
+        self.assert_removal_refused(clone)
+
+    def test_skip_worktree_cannot_hide_local_work_from_removal(self):
+        _, clone = self.pushed_clone()
+        self.git('-C', str(clone), 'update-index', '--skip-worktree', 'tracked.txt')
+        (clone / 'tracked.txt').write_text('hidden local work\n')
+        self.assert_removal_refused(clone)
+
     def test_private_git_data_refuses_normal_removal(self):
         _, clone = self.pushed_clone()
         (clone / '.git/local-notes.txt').write_text('private notes\n')
