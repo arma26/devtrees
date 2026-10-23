@@ -50,4 +50,8 @@ Later branches depend on these answers: synchronization mechanism, conflict hand
 
 ## Sources and limitations
 
-Accepted requirements come from the design conversation. Compatibility inventory was checked against the official Git worktree documentation. No replacement behavior has been executed or validated. No ADR is recorded yet: concrete implementation trade-offs remain open.
+Accepted requirements come from the design conversation. The command inventory was checked against the official Git worktree documentation and local Git 2.50.1 help. The Git compatibility baseline remains undecided.
+
+A local probe created two independent clones of the same source, created and committed `task-b` in one, and checked the other with `git rev-parse --verify refs/heads/task-b`. The other clone returned exit status 128: no such local branch was available without synchronization. This verifies the basic branch-visibility gap, not a proposed synchronization solution.
+
+No replacement CLI behavior has been implemented or validated. No ADR is recorded yet: concrete implementation trade-offs remain open.
