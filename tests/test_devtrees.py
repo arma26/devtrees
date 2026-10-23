@@ -52,7 +52,16 @@ class StorageTests(unittest.TestCase):
                                        env=self.env, stderr=subprocess.STDOUT, text=True)
 
     def cli(self, *args, cwd=None, env=None, data=None):
-        return subprocess.run([sys.executable, str(CLI), *map(str, args)],
+        wrapper = '\n'.join([
+            'import os, runpy, sys',
+            'def guard(event, args):',
+            '    if event == "shutil.rmtree":',
+            '        raise RuntimeError("DELETION_ATTEMPT: " + os.fspath(args[0]))',
+            'sys.addaudithook(guard)',
+            'sys.argv = sys.argv[1:]',
+            'runpy.run_path(sys.argv[0], run_name="__main__")',
+        ])
+        return subprocess.run([sys.executable, '-c', wrapper, str(CLI), *map(str, args)],
                               cwd=cwd or self.root, env=env or self.env,
                               input=data, capture_output=True, text=True)
 
@@ -180,11 +189,11 @@ class StorageTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(outside.exists())
 
-    def test_teardown_defaults_to_a_nonmutating_dry_run(self):
+    def test_explicit_dry_run_preserves_local_data(self):
         workspace, clone = self.setup_clone()
         marker = clone / 'untracked.txt'
         marker.write_text('retain this data\n')
-        result = self.cli('remove', clone)
+        result = self.cli('remove', '--dry-run', clone)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('Dry run', result.stdout)
         self.assertIn('untracked.txt', result.stdout)
@@ -192,6 +201,74 @@ class StorageTests(unittest.TestCase):
         self.assertEqual(marker.read_text(), 'retain this data\n')
         self.assertFalse((self.root / '.devtrees-quarantine').exists())
         self.assertEqual({p.name for p in workspace.iterdir()}, {'.devtrees', 'hub.git', clone.name})
+
+    def pushed_clone(self):
+        workspace, clone = self.setup_clone()
+        self.git('-C', str(clone), 'push', 'origin', 'task-a')
+        return workspace, clone
+
+    def assert_removal_refused(self, clone):
+        result = self.cli('remove', clone)
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn('DELETION_ATTEMPT:', result.stderr)
+        self.assertTrue(clone.exists())
+        return result
+
+    def test_preserved_clone_reaches_only_selected_removal(self):
+        workspace, clone = self.pushed_clone()
+        result = self.cli('remove', clone)
+        self.assertIn('DELETION_ATTEMPT: ' + str(clone), result.stderr)
+        self.assertTrue(clone.exists())
+        self.assertTrue((workspace / 'hub.git').is_dir())
+        self.assertTrue((workspace / '.devtrees').is_file())
+
+    def test_uncommitted_data_refuses_normal_removal(self):
+        _, clone = self.pushed_clone()
+        (clone / 'tracked.txt').write_text('local changes\n')
+        self.assert_removal_refused(clone)
+        self.assertEqual((clone / 'tracked.txt').read_text(), 'local changes\n')
+
+    def test_unpushed_commit_refuses_normal_removal(self):
+        _, clone = self.pushed_clone()
+        (clone / 'tracked.txt').write_text('committed only here\n')
+        self.git('-C', str(clone), 'commit', '-qam', 'Local work')
+        self.assert_removal_refused(clone)
+
+    def test_ignored_file_refuses_normal_removal(self):
+        _, clone = self.pushed_clone()
+        (clone / '.gitignore').write_text('private.txt\n')
+        self.git('-C', str(clone), 'add', '.gitignore')
+        self.git('-C', str(clone), 'commit', '-qm', 'Ignore private data')
+        self.git('-C', str(clone), 'push', 'origin', 'task-a')
+        (clone / 'private.txt').write_text('not in Git\n')
+        self.assert_removal_refused(clone)
+
+    def test_stash_refuses_normal_removal(self):
+        _, clone = self.pushed_clone()
+        (clone / 'tracked.txt').write_text('stashed data\n')
+        self.git('-C', str(clone), 'stash', 'push', '-qm', 'Keep local work')
+        self.assert_removal_refused(clone)
+
+    def test_foreign_clone_refuses_normal_removal(self):
+        workspace, _ = self.setup_clone()
+        foreign = workspace / 'foreign'
+        self.git('clone', '-q', '--no-local', str(self.remote), str(foreign))
+        self.assert_removal_refused(foreign)
+
+    def test_missing_hub_configuration_refuses_normal_removal(self):
+        workspace, clone = self.pushed_clone()
+        config = workspace / '.devtrees'
+        saved = config.read_bytes()
+        (workspace / '.devtrees-before-test').write_bytes(saved)
+        self.assertEqual((workspace / '.devtrees-before-test').read_bytes(), saved)
+        config.write_text('export devtrees_repo=' + repr(str(workspace / 'missing.git')) + '\n')
+        self.assert_removal_refused(clone)
+        self.assertTrue((workspace / 'hub.git').is_dir())
+
+    def test_private_git_data_refuses_normal_removal(self):
+        _, clone = self.pushed_clone()
+        (clone / '.git/local-notes.txt').write_text('private notes\n')
+        self.assert_removal_refused(clone)
 
     def test_noninteractive_quarantine_cannot_approve_itself(self):
         _, clone = self.setup_clone()
