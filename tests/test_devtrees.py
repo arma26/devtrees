@@ -54,6 +54,61 @@ class StorageTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         return workspace, clone
 
+    def test_listing_discovers_unregistered_native_clone(self):
+        workspace, clone = self.setup_clone()
+        manual = workspace / 'created-by-git'
+        self.git('clone', '-q', str(self.remote), str(manual))
+        result = self.cli('list', cwd=workspace)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(set(result.stdout.splitlines()), {str(clone), str(manual)})
+        self.assertEqual({p.name for p in workspace.iterdir()}, {'.devtrees', clone.name, manual.name})
+
+    def test_push_handoff_works_without_workspace_config(self):
+        workspace, clone = self.setup_clone()
+        result = self.cli('push', clone, str(self.remote), 'task-a')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('refs/heads/task-a', self.git('ls-remote', str(self.remote)))
+
+    def test_unset_root_and_outward_symlink_refuse_before_creation(self):
+        env = self.env.copy()
+        env.pop('devtrees_root')
+        result = self.cli('init', self.root / 'missing-root', self.remote, env=env)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((self.root / 'missing-root').exists())
+        outside = self.fixture / 'outside'
+        outside.mkdir()
+        (self.root / 'escape').symlink_to(outside, target_is_directory=True)
+        result = self.cli('init', self.root / 'escape/project', self.remote)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(list(outside.iterdir()), [])
+
+    def test_existing_destination_is_not_overwritten(self):
+        workspace, clone = self.setup_clone()
+        before = (clone / 'tracked.txt').read_bytes()
+        result = self.cli('add', clone, cwd=workspace)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual((clone / 'tracked.txt').read_bytes(), before)
+
+    def test_full_clone_mode_and_nearest_configuration(self):
+        workspace = self.root / 'project'
+        result = self.cli('init', workspace, self.remote)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        inner = workspace / 'inner'
+        result = self.cli('init', inner, self.remote, '--clone-mode', 'full', cwd=workspace)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        result = self.cli('add', inner / 'clone', cwd=inner)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((inner / 'clone/.git/shallow').exists())
+
+    def test_config_cannot_widen_shell_root(self):
+        workspace = self.root / 'project'
+        workspace.mkdir()
+        (workspace / '.devtrees').write_text('export devtrees_repo=' + str(self.remote) + '\nexport devtrees_root=/\n')
+        outside = self.fixture / 'forbidden'
+        result = self.cli('add', outside, cwd=workspace)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(outside.exists())
+
     def test_setup_clone_and_native_git_push_without_registry(self):
         workspace, clone = self.setup_clone()
         self.assertTrue((clone / '.git').is_dir())
