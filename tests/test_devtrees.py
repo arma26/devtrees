@@ -7,9 +7,20 @@ import unittest
 
 REPO = Path(__file__).resolve().parents[1]
 CLI = REPO / 'devtrees.py'
+DISCOVERY_ENV = {key: value for key, value in os.environ.items()
+                 if not key.startswith('GIT_')}
+DISCOVERY_ENV.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM='1')
+TOP = subprocess.check_output(
+    ['git', '-C', str(REPO), 'rev-parse', '--show-toplevel'],
+    env=DISCOVERY_ENV, text=True).rstrip('\n')
+if Path(TOP).resolve() != REPO:
+    raise RuntimeError('test checkout does not match the Git working directory')
 GITDIR = Path(subprocess.check_output(
-    ['git', '-C', str(REPO), 'rev-parse', '--absolute-git-dir'], text=True).strip())
+    ['git', '-C', str(REPO), 'rev-parse', '--absolute-git-dir'],
+    env=DISCOVERY_ENV, text=True).rstrip('\n'))
 FIXTURES = GITDIR / 'stateless-test-fixtures'
+if FIXTURES.is_symlink():
+    raise RuntimeError('test fixture directory must not be a symlink')
 FIXTURES.mkdir(exist_ok=True)
 
 
