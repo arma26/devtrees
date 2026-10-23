@@ -78,6 +78,53 @@ class StorageTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(clone.exists())
 
+    def test_init_seeds_a_full_bare_hub_from_a_normal_checkout(self):
+        self.git('-C', str(self.seed), 'commit', '--allow-empty', '-qm', 'Second commit')
+        (self.seed / 'local-only.txt').write_text('not committed\n')
+        before = (self.seed / '.git/config').read_bytes()
+        workspace = self.root / 'project'
+        result = self.cli('init', workspace, self.seed)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        hub = workspace / 'hub.git'
+        self.assertTrue(hub.is_dir())
+        self.assertEqual(self.git('-C', str(hub), 'rev-parse', '--is-bare-repository').strip(), 'true')
+        self.assertEqual(self.git('-C', str(hub), 'rev-parse', '--is-shallow-repository').strip(), 'false')
+        self.assertEqual(self.git('-C', str(hub), 'rev-list', '--count', 'main').strip(), '2')
+        self.assertIn(str(hub), (workspace / '.devtrees').read_text())
+        self.assertNotIn('local-only.txt', self.git('-C', str(hub), 'ls-tree', '--name-only', 'main'))
+        self.assertEqual((self.seed / '.git/config').read_bytes(), before)
+
+    def test_two_agents_push_to_hub_then_original_fetches_and_merges(self):
+        workspace, first = self.setup_clone()
+        hub = workspace / 'hub.git'
+        self.assertEqual(self.git('-C', str(first), 'remote', 'get-url', 'origin').strip(), str(hub))
+        second = workspace / 'task-b'
+        result = self.cli('add', '-b', 'task-b', second, cwd=workspace)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        original_tip = self.git('-C', str(self.seed), 'rev-parse', 'HEAD')
+        for clone, branch in ((first, 'task-a'), (second, 'task-b')):
+            (clone / (branch + '.txt')).write_text(branch + '\n')
+            self.git('-C', str(clone), 'add', branch + '.txt')
+            self.git('-C', str(clone), 'commit', '-qm', branch)
+            self.git('-C', str(clone), 'push', 'origin', branch)
+        self.assertEqual(self.git('-C', str(self.seed), 'rev-parse', 'HEAD'), original_tip)
+        self.git('-C', str(self.seed), 'remote', 'add', 'devtrees', str(hub))
+        self.git('-C', str(self.seed), 'fetch', 'devtrees')
+        self.git('-C', str(self.seed), 'merge', '--ff-only', 'devtrees/task-a')
+        self.git('-C', str(self.seed), 'merge', '--no-edit', 'devtrees/task-b')
+        for branch in ('task-a', 'task-b'):
+            self.assertEqual((self.seed / (branch + '.txt')).read_text(), branch + '\n')
+        self.assertEqual(self.git('-C', str(hub), 'rev-parse', 'main'), original_tip)
+
+    def test_init_refuses_a_shallow_source(self):
+        shallow = self.fixture / 'shallow-source'
+        self.git('clone', '-q', '--no-local', '--depth=1', str(self.seed), str(shallow))
+        workspace = self.root / 'project'
+        result = self.cli('init', workspace, shallow)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((workspace / '.devtrees').exists())
+        self.assertTrue(shallow.exists())
+
     def test_listing_discovers_unregistered_native_clone(self):
         workspace, clone = self.setup_clone()
         manual = workspace / 'created-by-git'
@@ -85,7 +132,7 @@ class StorageTests(unittest.TestCase):
         result = self.cli('list', cwd=workspace)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(set(result.stdout.splitlines()), {str(clone), str(manual)})
-        self.assertEqual({p.name for p in workspace.iterdir()}, {'.devtrees', clone.name, manual.name})
+        self.assertEqual({p.name for p in workspace.iterdir()}, {'.devtrees', 'hub.git', clone.name, manual.name})
 
     def test_push_handoff_works_without_workspace_config(self):
         workspace, clone = self.setup_clone()
@@ -144,7 +191,7 @@ class StorageTests(unittest.TestCase):
         self.assertIn('Restore:', result.stdout)
         self.assertEqual(marker.read_text(), 'retain this data\n')
         self.assertFalse((self.root / '.devtrees-quarantine').exists())
-        self.assertEqual({p.name for p in workspace.iterdir()}, {'.devtrees', clone.name})
+        self.assertEqual({p.name for p in workspace.iterdir()}, {'.devtrees', 'hub.git', clone.name})
 
     def test_noninteractive_quarantine_cannot_approve_itself(self):
         _, clone = self.setup_clone()
@@ -183,8 +230,8 @@ class StorageTests(unittest.TestCase):
         pushed = subprocess.run(['git', '-C', str(clone), 'push', 'origin', 'task-a'],
                                 env=clean_env, capture_output=True, text=True)
         self.assertEqual(pushed.returncode, 0, pushed.stderr)
-        self.assertIn('refs/heads/task-a', self.git('ls-remote', str(self.remote)))
-        self.assertEqual({p.name for p in workspace.iterdir()}, {'.devtrees', clone.name})
+        self.assertIn('refs/heads/task-a', self.git('ls-remote', str(workspace / 'hub.git')))
+        self.assertEqual({p.name for p in workspace.iterdir()}, {'.devtrees', 'hub.git', clone.name})
         self.assertFalse(any('devtrees' in p.name for p in (clone / '.git').iterdir()))
 
 
