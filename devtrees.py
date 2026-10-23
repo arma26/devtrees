@@ -126,7 +126,7 @@ def add(args, root):
     destination = new_destination(args.path, root)
     destination.parent.mkdir(parents=True, exist_ok=True)
     history = ['--depth=1', '--no-single-branch'] if mode == 'shallow' else ['--reject-shallow']
-    git('clone', '--no-local', '--no-hardlinks', *history, '--', source, destination, cwd=directory)
+    git('clone', '--template=', '--no-local', '--no-hardlinks', *history, '--', source, destination, cwd=directory)
     if args.branch:
         git('switch', '-c', args.branch, *([args.start] if args.start else []), cwd=destination)
     elif args.start:
@@ -234,7 +234,9 @@ def removal_check(source, root):
             raise Refusal('Git storage must not redirect through a symlink')
     if (admin / 'objects/info/alternates').exists():
         raise Refusal('normal removal cannot verify shared object storage')
-    if (admin / 'hooks').exists() and any(not p.name.endswith('.sample') for p in (admin / 'hooks').iterdir()):
+    if (admin / 'branches').exists() and any((admin / 'branches').iterdir()):
+        raise Refusal('private legacy branch data remains. Keep or quarantine the clone')
+    if (admin / 'hooks').exists() and any((admin / 'hooks').iterdir()):
         raise Refusal('local Git hooks remain. Keep or quarantine the clone')
     if (admin / 'info').exists() and any(p.name not in {'exclude', 'refs', 'packs', 'commit-graph'} for p in (admin / 'info').iterdir()):
         raise Refusal('private Git information remains. Keep or quarantine the clone')
