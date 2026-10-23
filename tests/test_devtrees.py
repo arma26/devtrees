@@ -65,6 +65,19 @@ class StorageTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         return workspace, clone
 
+    def test_trailing_space_path_survives_listing_and_dry_run(self):
+        workspace, _ = self.setup_clone()
+        clone = workspace / 'task with a trailing space '
+        result = self.cli('add', '-b', 'space-path', clone, cwd=workspace)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.git('-C', str(clone), 'status', '--porcelain'), '')
+        result = self.cli('list', cwd=workspace)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(str(clone), result.stdout.splitlines())
+        result = self.cli('remove', '--dry-run', clone)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(clone.exists())
+
     def test_listing_discovers_unregistered_native_clone(self):
         workspace, clone = self.setup_clone()
         manual = workspace / 'created-by-git'
