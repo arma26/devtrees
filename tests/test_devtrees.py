@@ -109,6 +109,36 @@ class StorageTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(outside.exists())
 
+    def test_teardown_defaults_to_a_nonmutating_dry_run(self):
+        workspace, clone = self.setup_clone()
+        marker = clone / 'untracked.txt'
+        marker.write_text('retain this data\n')
+        result = self.cli('remove', clone)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('Dry run', result.stdout)
+        self.assertIn('untracked.txt', result.stdout)
+        self.assertIn('Restore:', result.stdout)
+        self.assertEqual(marker.read_text(), 'retain this data\n')
+        self.assertFalse((self.root / '.devtrees-quarantine').exists())
+        self.assertEqual({p.name for p in workspace.iterdir()}, {'.devtrees', clone.name})
+
+    def test_noninteractive_quarantine_cannot_approve_itself(self):
+        _, clone = self.setup_clone()
+        result = self.cli('remove', '--quarantine', clone, data='quarantine\n')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('terminal', result.stderr)
+        self.assertTrue(clone.exists())
+        self.assertFalse((self.root / '.devtrees-quarantine').exists())
+
+    def test_quarantine_will_not_select_a_symlink(self):
+        _, clone = self.setup_clone()
+        alias = self.root / 'alias'
+        alias.symlink_to(clone, target_is_directory=True)
+        result = self.cli('remove', '--dry-run', alias)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('symlink', result.stderr)
+        self.assertTrue(clone.exists())
+
     def test_setup_clone_and_native_git_push_without_registry(self):
         workspace, clone = self.setup_clone()
         self.assertTrue((clone / '.git').is_dir())
