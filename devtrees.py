@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Small, stateless setup and teardown for ordinary Git clones."""
+"""Create and retire independent Git task clones."""
 
 import argparse
 import hashlib
@@ -187,7 +187,7 @@ def inventory(source):
                     digest.update(block)
             extra = digest.hexdigest()
         elif not stat.S_ISDIR(info.st_mode):
-            raise Refusal('stop active processes; unsupported special file: ' + str(path))
+            raise Refusal('stop active processes. Unsupported special file: ' + str(path))
         rows.append((str(path.relative_to(source)), info.st_mode, info.st_dev,
                      info.st_ino, info.st_size, info.st_mtime_ns, extra))
     return rows
@@ -301,7 +301,7 @@ def teardown(args, root):
     if store.exists() and (not store.is_dir() or (store / '.git').exists()):
         raise Refusal('quarantine storage is occupied by another resource')
     if source.is_mount() or source.stat().st_dev != root.stat().st_dev:
-        raise Refusal('quarantine requires the same filesystem; no copy/delete fallback')
+        raise Refusal('quarantine requires the same filesystem. No copy/delete fallback is available')
     if store.exists() and store.stat().st_dev != source.stat().st_dev:
         raise Refusal('quarantine storage is on a different filesystem')
     container = store / uuid.uuid4().hex
@@ -313,7 +313,7 @@ def teardown(args, root):
     print('Quarantine:', repr(str(destination)))
     print('Restore: mv -n -- ' + shlex.quote(str(destination)) + ' ' + shlex.quote(str(source)))
     print('Git changes:', repr(changes))
-    print('Resources:', len(resources), 'entries; regular-file bytes:',
+    print('Resources:', len(resources), 'entries. Regular-file bytes:',
           sum(row[4] for row in resources if stat.S_ISREG(row[1])))
     for row in resources:
         print(repr(row[0]), oct(row[1]), row[4], repr(row[6]))
@@ -321,23 +321,23 @@ def teardown(args, root):
         print('Dry run: nothing moved. Normal removal requires preserved work. Quarantine requires terminal approval.')
         return
     if not sys.stdin.isatty():
-        raise Refusal('quarantine requires a real terminal; noninteractive approval is refused')
+        raise Refusal('quarantine requires a real terminal. Noninteractive input cannot approve it')
     reply = input('Stop writers to this clone. Type quarantine to move exactly these resources: ')
     if reply != 'quarantine':
         print('Cancelled: source retained.')
         return
     if repository(args.path, root) != source or inventory(source) != resources:
-        raise Refusal('source changed after the plan; source retained')
+        raise Refusal('source changed after the plan. The source remains in place')
     if container.exists() or container.is_symlink():
-        raise Refusal('destination collision; source retained')
+        raise Refusal('the destination is occupied. The source remains in place')
     store.mkdir(exist_ok=True)
     if store.is_symlink() or inside(store, root) != store or store.stat().st_dev != source.stat().st_dev:
-        raise Refusal('quarantine storage changed; source retained')
+        raise Refusal('quarantine storage changed. The source remains in place')
     container.mkdir(mode=0o700)
     result = subprocess.run(['mv', '-n', str(source), str(destination)], cwd=root)
     if (result.returncode or source.exists() or not destination.is_dir()
             or inventory(destination) != resources):
-        raise Refusal('quarantine not verified; inspect the printed source/destination; nothing is deleted')
+        raise Refusal('quarantine could not be verified. Inspect both reported paths. No files were deleted')
     print('Quarantined:', repr(str(destination)))
 
 
@@ -357,7 +357,7 @@ def parser():
     listing = commands.add_parser('list', help='discover ordinary clones from the filesystem')
     listing.add_argument('directory', nargs='?')
     listing.set_defaults(handler=discover)
-    handoff = commands.add_parser('push', help='invoke native git push; never merge')
+    handoff = commands.add_parser('push', help='push to an explicit remote without merging')
     handoff.add_argument('path')
     handoff.add_argument('remote')
     handoff.add_argument('refspec', nargs='*')
