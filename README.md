@@ -1,34 +1,100 @@
 # Devtrees
 
-Design notes for a CLI that replaces `git worktree` command invocations in documentation, instructions, and scripts while using ordinary independent clones instead of linked worktrees.
+Set up and retire development environments as ordinary independent Git clones.
+Devtrees is a small Python storage wrapper, not Git worktree emulation. There is
+no membership registry, clone ID, state database, active environment, or merge
+orchestration. Filesystem paths are the source of truth.
 
-**Status:** design only. The selected project and CLI name is `devtrees`. No CLI or skill is implemented.
+## Start an environment
 
-## Goal
+Requires Python 3.9+, Git, `/bin/sh`, and `mv` with `-n` support on a POSIX host.
+Put this checkout's `bin` directory on your PATH; no package installation is
+needed. The command is a symlink to the standalone `devtrees.py` script.
 
-Provide worktree command parity so documentation, instructions, and scripts can replace the `git worktree` command prefix with `devtrees`. Change repository storage and workspace organization, not the user's development workflow. Any compatibility gap is an unresolved design obligation, not permission to change the goal.
-
-Devtrees is a thin orchestration layer over native Git commands: it supplies directory structure, configuration/environment variables, and execution context rather than reimplementing cloning, transfers, branching, or merging.
-
-The additional `devtrees init` command will create a new workspace directory, seed its default `.devtrees` with the target repository, and prepare it for immediate branch checkout without manual configuration edits. It will not require a `main` checkout or make the workspace itself a Git repository. See [workspace initialization](docs/design.md#workspace-initialization) for the planned contract.
-
-The intended reader is the user designing the future script and skill. Start with [the design](docs/design.md) for accepted requirements and unresolved compatibility issues. [The glossary](GLOSSARY.md) defines the domain terms.
-
-## Motivation
-
-The user reports worktree-related failures in relative scripts, linking, container Git access, and package-manager cache behavior. These are target validation scenarios, not yet reproduced findings or claims about every tool.
-
-## Example layout
-
-```text
-workspace/                 # not a repository
-├── .devtrees              # config: environment definitions and target repository
-├── example.git/            # optional local bare repository
-├── branch-a/               # ordinary independent clone
-├── branch-b/               # ordinary independent clone
-└── branch-c/               # ordinary independent clone
+```sh
+export devtrees_root="$HOME/environments"
+mkdir -p -- "${devtrees_root:?}"
+cd -- "$devtrees_root"
+devtrees init project /path/to/source.git
+cd project
+devtrees add -b task-a ./task-a
+cd task-a
+git status
 ```
 
-Commands discover `.devtrees` by walking upward from the current directory, including from deeply nested directories inside a clone. The nearest file wins; ancestor configurations are not combined. The file uses shell-sourceable environment syntax so subagents and containers can source it directly. No particular checkout, including `main`, is required.
+`init` creates a new directory with a sourceable `.devtrees`. `add` creates a
+self-contained `.git/` directory, with no hardlinked/shared object-store
+requirement. Existing destinations are refused. Failed clone/checkout attempts
+are retained, not automatically cleaned up.
 
-The user exports `devtrees_root` from their shell configuration. It is a required operating boundary, not just a search limit: devtrees must not manage directories outside it. Unset, empty, or invalid roots fail closed. Scripts must use strict shell execution and explicitly guard missing variables. These requirements are recorded in [the boundary contract](docs/design.md#operating-boundary-and-strict-shell-execution); enforcement is not implemented yet.
+Work inside the clone using ordinary Git and `cd`. Devtrees is not needed for
+branching, pulling, committing, pushing, or merging:
+
+```sh
+git push --set-upstream origin task-a
+```
+
+Alternatively, `devtrees push ./task-a origin task-a` from the workspace invokes
+native `git push`. It does not merge or synchronize clones. The user chooses
+where and how integration happens.
+
+## Discover and retire
+
+```sh
+cd -- "$devtrees_root/project"
+devtrees list
+devtrees remove ./task-a                 # dry-run only
+devtrees remove ./task-a --quarantine    # interactive confirmation
+```
+
+`list` discovers ordinary clones beneath the nearest workspace, or an explicit
+`list DIRECTORY`, without registration. Discovery stops at each clone, skips
+Git internals, and does not follow directory symlinks. Renaming directories
+needs no devtrees repair. A root-wide listing can also find quarantined clones;
+there is no hidden active/inactive membership state.
+
+Teardown prints Git changes, every resource, the proposed destination and a
+restore command. Stop writers before confirming. Quarantine requires a terminal
+and the exact confirmation `quarantine`; piped input cannot approve it. It checks
+the inventory again, moves into a new private directory beneath
+`$devtrees_root/.devtrees-quarantine/`, and verifies the moved contents. It never
+falls back to cross-filesystem copy/delete and has no purge or `--yes` option.
+`teardown` is an alias for `remove`.
+
+Keep the printed resource manifest and restore mapping; devtrees does not write
+a recovery database. Confirm that `Quarantined:` reports success and inspect the
+reported directory with ordinary Git. Restore only to an absent original path
+using the printed no-clobber command, then verify with `git status`. Cancellation
+leaves the clone in place. On an unverified move, inspect both reported paths;
+nothing is automatically deleted. This is not crash recovery or protection
+against racing filesystem writers.
+
+## Configuration and boundary
+
+```sh
+export devtrees_repo='/path/to/source.git'
+export devtrees_clone_mode='shallow'  # or full
+```
+
+The nearest `.devtrees` wins, with paths relative to its directory. It is trusted
+shell code, loaded with `/bin/sh -eu`; it must not print to stdout. Only the source
+and clone-mode settings are transported, as NUL-delimited fields, not JSON.
+`devtrees_root` is mandatory in the invoking shell and cannot be widened by the
+configuration. Calls and target paths must remain inside that root, including
+symlink resolution. Git hooks, shell configuration and remote endpoints remain
+trusted inputs, not an OS sandbox.
+
+New clones default to depth one for available branch tips. Choose full history
+with `init --clone-mode full`, or set `devtrees_clone_mode=full`; a shallow source
+is rejected in full mode. Existing clones are never silently deepened. Use
+native Git if older history is needed. `add PATH START` checks out a start point;
+`add -b BRANCH PATH [START]` creates a branch with native Git.
+
+## Development
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
+```
+
+Tests use real local Git repositories and retain fixtures in Git-private storage.
+See [design](docs/design.md) and [terminology](GLOSSARY.md).

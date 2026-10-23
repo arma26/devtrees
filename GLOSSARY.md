@@ -1,19 +1,10 @@
-# Devtrees
+# Terminology
 
-A workspace groups independent development checkouts while preserving familiar worktree-management workflows.
-
-## Language
-
-**Operating root**:
-The user-selected directory that bounds where Devtrees may discover and manage workspaces and development repositories.
-
-**Workspace**:
-A non-repository directory containing related working clones and their workspace configuration.
-
-**Devtree**:
-An independent repository used for development within a workspace. A workspace does not require a designated main checkout.
-_Avoid_: Linked worktree
-
-**Local bare repository**:
-An optional repository within a workspace that can serve as both a local cache and an authoritative destination for local branches.
-_Avoid_: Mirror, mandatory hub
+- **Environment / devtree:** an ordinary independent Git clone directory.
+- **Workspace:** a normal directory with sourceable `.devtrees` configuration.
+- **Operating root:** shell-provided `devtrees_root`, bounding devtrees operations.
+- **Discovery:** inspecting current directories and Git, not consulting a registry.
+- **Handoff:** native Git push to an explicitly selected remote; not merging.
+- **Dry-run:** resource/restore plan without a move.
+- **Quarantine:** an approved same-filesystem move, retaining the complete clone.
+- **Manifest:** the printed resource inventory and restore mapping; not a database.
