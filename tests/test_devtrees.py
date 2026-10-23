@@ -139,6 +139,15 @@ class StorageTests(unittest.TestCase):
         self.assertIn('symlink', result.stderr)
         self.assertTrue(clone.exists())
 
+    def test_teardown_quotes_symlink_targets(self):
+        _, clone = self.setup_clone()
+        target = 'missing\npretend approval'
+        (clone / 'odd-link').symlink_to(target)
+        result = self.cli('remove', '--dry-run', clone)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(repr(target), result.stdout)
+        self.assertNotIn(target, result.stdout)
+
     def test_setup_clone_and_native_git_push_without_registry(self):
         workspace, clone = self.setup_clone()
         self.assertTrue((clone / '.git').is_dir())
