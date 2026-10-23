@@ -1,6 +1,8 @@
 import os
 from pathlib import Path
 import subprocess
+import shutil
+import shlex
 import sys
 import tempfile
 import unittest
@@ -290,6 +292,30 @@ class StorageTests(unittest.TestCase):
         directory.mkdir(exist_ok=True)
         (directory / 'private-work.sample').write_text('private unfinished hook\n')
         self.assert_removal_refused(clone)
+
+    def test_incomplete_hub_objects_refuse_normal_removal(self):
+        complete = self.fixture / 'complete.git'
+        self.git('clone', '-q', '--bare', '--template=', '--local', '--no-hardlinks',
+                 str(self.seed), str(complete))
+        oid = self.git('-C', str(self.seed), 'rev-parse', 'HEAD:tracked.txt').strip()
+        missing = complete / 'objects' / oid[:2] / oid[2:]
+        self.assertTrue(missing.is_file())
+        workspace = self.root / 'project'
+        workspace.mkdir()
+        hub = workspace / 'hub.git'
+        def omit_one_blob(directory, names):
+            return [oid[2:]] if Path(directory) == missing.parent else []
+        shutil.copytree(complete, hub, ignore=omit_one_blob)
+        self.assertTrue(missing.is_file())
+        self.assertFalse((hub / 'objects' / oid[:2] / oid[2:]).exists())
+        (workspace / '.devtrees').write_text(
+            'export devtrees_repo=' + shlex.quote(str(hub)) + '\n')
+        clone = workspace / 'task'
+        self.git('clone', '-q', '--template=', '--no-local', '--no-hardlinks',
+                 str(complete), str(clone))
+        self.git('-C', str(clone), 'remote', 'set-url', 'origin', str(hub))
+        self.assert_removal_refused(clone)
+        self.assertEqual((clone / 'tracked.txt').read_text(), 'initial\n')
 
     def test_private_git_data_refuses_normal_removal(self):
         _, clone = self.pushed_clone()
