@@ -1,34 +1,96 @@
-# Design of the bare hub workflow
+# Workflow reference
 
-Devtrees creates project workspaces and ordinary independent task clones.
-A project workspace contains a sourceable `.devtrees` configuration and a bare Git repository named `hub.git`.
-The hub stores committed branches without a checked-out working tree.
-The original checkout remains the place where the user reviews and integrates task branches.
-See the [quick start](../README.md#quick-start) for the complete command sequence.
+For the guided user journey, see [start parallel tasks](../README.md#start-parallel-tasks).
+This page covers command behavior, configuration, verification and recovery details.
+
+## Contents
+
+- [Workspace layout](#workspace-layout)
+- [Responsibilities and lifetime](#responsibilities-and-lifetime)
+- [Branch handoff and integration checks](#branch-handoff-and-integration-checks)
+- [State and discovery](#state-and-discovery)
+- [Configuration and root boundary](#configuration-and-root-boundary)
+- [Preservation and removal](#preservation-and-removal)
+- [Quarantine and restore](#quarantine-and-restore)
+- [Agent workflow routing](#agent-workflow-routing)
+- [Development checks](#development-checks)
+
+## Workspace layout
+
+```text
+normal-checkout/                 # original integration checkout
+
+$devtrees_root/project/
+├── .devtrees                    # sourceable configuration pointing at hub.git
+├── hub.git/                     # full bare repository for committed branches
+├── task-a/                      # independent clone, branch agent/task-a
+└── task-b/                      # independent clone, branch agent/task-b
+```
+
+The original checkout can be outside `devtrees_root`. Devtrees calls and mutation targets stay inside that root.
 
 ## Responsibilities and lifetime
 
-- `init` creates a full bare clone at `project/hub.git` and points `.devtrees` at it.
+- `init DIRECTORY SOURCE` creates a full bare clone at `DIRECTORY/hub.git` and points `.devtrees` at it.
   It rejects shallow sources. It prints a remote-registration command but does not change the original checkout's remotes.
-- `add` creates an independent clone from the configured source. In the default project layout, that source is the hub.
-  Each task has its own `.git/` directory. Use a distinct branch for each task. Its `origin` points to the hub.
+- `add -b BRANCH PATH [START]` creates an independent task clone and a branch.
+  `add PATH START` selects a start point without creating a named branch.
+  Each clone has its own `.git/` directory. Its `origin` points to the configured source, normally the hub.
   Native Git templates and settings apply.
-- `push` invokes native Git push to the selected remote. It neither merges branches nor synchronizes clones.
-- Native Git `fetch` in the original checkout updates remote-tracking references through the additional `devtrees` remote.
-  The user reviews each branch before an explicit native Git `merge`. The existing hosted `origin` remains unchanged.
-- `remove PATH --dry-run` inspects the proposed operation without removing the clone.
-  `remove PATH --please` deletes the selected clone. Explicit `--quarantine` preserves the complete clone instead.
+- `push PATH REMOTE [REFSPEC...]` invokes native Git push. It does not merge branches or synchronize clones.
+- `remove PATH` and `remove PATH --dry-run` preview the selected clone.
+  `remove PATH --please` deletes it. `remove PATH --quarantine` preserves the complete clone through an approved move.
+  `teardown` is an alias for `remove`.
 
 The hub starts as a snapshot, not a live synchronization service.
-Transfer a newer committed base explicitly before tasks that need it.
-
 Only committed history crosses repositories. Branch pushes do not preserve uncommitted changes, untracked or ignored files, or stashes.
+Task removal keeps the project configuration, hub and sibling clones.
 
-Task removal keeps the configuration, hub and sibling clones.
 Hub retirement is a separate decision because it can hold branches absent from the original checkout or hosted upstream.
 A local hub is not a separate-device backup.
-
 There is no automatic merge, branch deletion, force-push, hosted publication or cleanup after a task.
+
+## Branch handoff and integration checks
+
+After pushing task-a, compare the hub's branch tip with your local commit:
+
+```sh
+cd -- "$devtrees_root/project/task-a"
+git ls-remote --heads origin refs/heads/agent/task-a
+git rev-parse HEAD
+```
+
+The commit IDs should match. These checks concern that committed branch, not other local-only work.
+If the push fails, keep the clone and inspect Git's error.
+
+In the original checkout, inspect an existing `devtrees` remote before fetching:
+
+```sh
+git remote get-url devtrees
+git fetch devtrees
+git log --oneline HEAD..devtrees/agent/task-a
+git diff HEAD...devtrees/agent/task-a
+```
+
+The remote URL should identify the intended project hub. Keep any existing hosted `origin` unchanged.
+Fetch updates remote-tracking refs without changing working files. Review each branch before merging it into the intended integration branch.
+After a successful merge, this ancestry check should exit successfully:
+
+```sh
+git merge-base --is-ancestor devtrees/agent/task-a HEAD
+```
+
+Merges can fast-forward or create merge commits. Resolve conflicts through native Git before treating integration as complete.
+
+To give new tasks your latest integration, explicitly update the hub's base branch.
+For a hub whose intended default base is `main`, push the selected integration commit to that branch:
+
+```sh
+git push devtrees HEAD:refs/heads/main
+```
+
+Choose the destination branch deliberately. A rejected push needs inspection, not an automatic force-push.
+Devtrees does not update the base on your behalf.
 
 ## State and discovery
 
@@ -49,8 +111,7 @@ Native Git remote registration, fetch and merge in the original checkout are exp
 The original checkout can be outside the operating root.
 
 The nearest `.devtrees` wins. Relative source paths resolve against its directory.
-The default project configuration points `devtrees_repo` at `hub.git` and selects shallow task clones.
-The supported settings have this form:
+The default project configuration points `devtrees_repo` at `hub.git` and selects shallow task clones:
 
 ```sh
 export devtrees_repo='/path/to/project/hub.git'
@@ -62,13 +123,10 @@ Only the source and clone-mode settings cross that interface, as NUL-delimited f
 Configuration cannot widen the shell-provided root.
 Git hooks, shell configuration and remote endpoints remain trusted inputs. Devtrees is not an operating-system sandbox.
 
-Shallow task clones use depth one for available branch tips.
-`init --clone-mode full` or `devtrees_clone_mode=full` selects full task history. Full mode rejects shallow sources.
-This task policy does not change the full-history hub created by `init`.
-
+Shallow task clones use depth one for available branch tips. The hub itself starts with full history.
+Use `init --clone-mode full DIRECTORY SOURCE` to select full history for that workspace's task clones.
+Alternatively, set `devtrees_clone_mode=full` in its configuration. Full mode rejects shallow sources.
 Existing clones are never silently deepened. Use native Git for older history.
-
-`add PATH START` checks out a start point. `add -b BRANCH PATH [START]` creates a branch with native Git.
 
 ## Preservation and removal
 
@@ -86,20 +144,45 @@ Devtrees enforces its root boundary and protects the project, hub and configured
 It also refuses a selected symlink or mount. It does not maintain inventories, manifests or a registry.
 
 Stop writers before removal or quarantine. Recursive deletion can fail partway and has no rollback guarantee.
-The root boundary is path containment, not an operating-system sandbox.
-See [task removal](../README.md#remove-a-task) for the commands and their effects.
+If deletion fails, inspect the remaining directory. Do not overwrite it or assume the operation made no changes.
+See [retire a task](../README.md#retire-a-task) for the normal user workflow.
 
-Quarantine preserves the complete clone through an explicit same-filesystem no-clobber move.
-It prints source, destination and restore command, then requires terminal approval with the exact word `quarantine`.
-The destination is a new private directory beneath `$devtrees_root/.devtrees-quarantine/`.
-It verifies the moved directory identity. There is no copy/delete fallback, purge or crash-recovery service.
-See [quarantine](../README.md#preserve-a-clone-with-quarantine) for verification and restoration.
+## Quarantine and restore
 
-## Scope
+Choose quarantine to retain the complete clone, including local-only work:
 
-Python and its standard library implement Devtrees.
-Task clones do not share objects, refs, indexes, stashes or repository configuration.
-They are not linked Git worktrees. See the [comparison](../README.md#similar-to-and-different-from-linked-git-worktrees).
-Exact Git-worktree flag parity, cache sharing, daemons and global instruction/script migration are outside this design.
-So are Perl, missing-registration recovery and prospective filesystem-collation emulation.
-Old experiments remain outside the product.
+```sh
+devtrees remove ./task-a --quarantine
+```
+
+It prints the source, destination and no-clobber restore command.
+It requires a real terminal and the exact confirmation `quarantine`. Piped input cannot approve it.
+Cancellation leaves the source in place.
+
+The move stays on one filesystem beneath `$devtrees_root/.devtrees-quarantine/`.
+Devtrees verifies the moved directory identity. There is no cross-filesystem copy/delete fallback.
+Retain the printed restore command and inspect the reported `Quarantined:` directory.
+
+Restore only to an absent original path with the printed command. Inspect the restored clone with `git status`.
+If verification fails, inspect both reported paths. There is no automatic purge, recovery database or crash-recovery service.
+Keep paths quiet throughout the operation. Devtrees does not protect against hostile filesystem writers.
+
+## Agent workflow routing
+
+Make the included [Devtrees skill](../skills/devtrees/SKILL.md) available through your agent harness's skill-loading mechanism.
+When loaded, it supersedes worktree invocations from requests, plans, commands and other skills.
+The agent uses Devtrees for the corresponding task lifecycle. This does not replace the `git` executable or install a shell alias.
+
+Existing linked worktrees are not converted or removed automatically.
+The skill preserves testing, review and approval obligations while changing how agents create and retire task folders.
+
+## Development checks
+
+From the repository root:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
+```
+
+Tests use real local Git repositories and retain fixtures in Git-private storage.
+Deletion-denying wrappers prevent the CLI tests from deleting clones. Reaching that guard verifies dispatch, not completed deletion.

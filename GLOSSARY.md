@@ -13,4 +13,4 @@
 - **Quarantine:** a terminal-approved, verified same-filesystem move that preserves the complete clone and its local-only work.
 - **Linked worktree:** a Git-managed checkout that shares repository storage instead of having an independent clone's `.git/` directory.
 
-See the [quick start](README.md#quick-start) and [design](docs/design.md) for commands and limits.
+See [start parallel tasks](README.md#start-parallel-tasks) and the [workflow reference](docs/design.md) for commands and limits.

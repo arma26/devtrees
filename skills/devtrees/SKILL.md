@@ -1,7 +1,7 @@
 ---
 name: devtrees
 description: Use whenever worktree/worktrees are requested or proposed.
-version: 0.2.0
+version: 0.2.1
 platforms: [macos, linux]
 metadata:
   hermes:
@@ -10,7 +10,9 @@ metadata:
 
 # Devtrees instead of linked worktrees
 
-Use devtrees independent clones when a user, plan, agent, or skill proposes Git worktrees for isolated development.
+Use Devtrees for any worktree invocation in an agent workflow.
+This includes requests from users, plans, commands, agents, or other skills.
+Translate instructions written as `git worktree` commands into the corresponding Devtrees workflow instead of invoking linked-worktree creation.
 This replaces generic worktree setup and removal instructions, not testing, review, or preservation requirements.
 An explanatory question does not authorize setup. Preserve existing linked worktrees unless the user explicitly requests a change.
 
@@ -108,7 +110,7 @@ Use explicit quarantine when the complete clone must remain:
 
 Do not invent merge, repair, prune, lock, unlock, move, or context-switch commands or recreate them through state files.
 Explain any requirement for shared Git refs or exact worktree flags. Ask for a scoped decision instead of claiming compatibility.
-You may inspect existing linked worktrees without changing them. An explicit request to keep using them is an exception to this default.
+You may inspect existing linked worktrees without changing them. Requirements for existing linked-worktree operations need a scoped decision, not automatic migration.
 
 ## Finish
 
