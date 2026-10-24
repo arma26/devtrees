@@ -2,17 +2,15 @@
 """Create and retire independent Git task clones."""
 
 import argparse
-import hashlib
 import os
 from pathlib import Path
 import re
 import shlex
 import shutil
-import stat
 import subprocess
 import sys
 import uuid
-from typing import Literal, Optional, overload
+from typing import Literal, overload
 
 
 class Refusal(Exception):
@@ -38,14 +36,14 @@ def inside(value, root):
 
 
 @overload
-def git(*args, cwd, capture: Literal[True], data: Optional[str] = None) -> str: ...
+def git(*args, cwd, capture: Literal[True]) -> str: ...
 
 
 @overload
-def git(*args, cwd, capture: Literal[False] = False, data: Optional[str] = None) -> None: ...
+def git(*args, cwd, capture: Literal[False] = False) -> None: ...
 
 
-def git(*args, cwd, capture=False, data=None):
+def git(*args, cwd, capture=False):
     env = os.environ.copy()
     for name in ('GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE',
                  'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES',
@@ -53,7 +51,7 @@ def git(*args, cwd, capture=False, data=None):
         env.pop(name, None)
     result = subprocess.run(['git', *map(str, args)], cwd=cwd, env=env,
                             stdout=subprocess.PIPE if capture else None,
-                            stderr=subprocess.PIPE if capture else None, text=True, input=data)
+                            stderr=subprocess.PIPE if capture else None, text=True)
     if result.returncode:
         raise Refusal((result.stderr or '').strip() or 'git command failed')
     return result.stdout.removesuffix('\n') if capture else None
@@ -126,7 +124,7 @@ def add(args, root):
     destination = new_destination(args.path, root)
     destination.parent.mkdir(parents=True, exist_ok=True)
     history = ['--depth=1', '--no-single-branch'] if mode == 'shallow' else ['--reject-shallow']
-    git('clone', '--template=', '--no-local', '--no-hardlinks', *history, '--', source, destination, cwd=directory)
+    git('clone', '--no-local', '--no-hardlinks', *history, '--', source, destination, cwd=directory)
     if args.branch:
         git('switch', '-c', args.branch, *([args.start] if args.start else []), cwd=destination)
     elif args.start:
@@ -167,224 +165,55 @@ def push(args, root):
     git('push', '--', args.remote, *args.refspec, cwd=path)
 
 
-def inventory(source):
-    paths = [source]
-    def failed(error):
-        raise error
-    for base, directories, files in os.walk(source, followlinks=False, onerror=failed):
-        directories.sort()
-        paths.extend(Path(base) / name for name in sorted(directories + files))
-    rows = []
-    for path in paths:
-        info = path.lstat()
-        extra = ''
-        if stat.S_ISLNK(info.st_mode):
-            extra = os.readlink(path)
-        elif stat.S_ISREG(info.st_mode):
-            digest = hashlib.sha256()
-            with path.open('rb') as stream:
-                for block in iter(lambda: stream.read(1024 * 1024), b''):
-                    digest.update(block)
-            extra = digest.hexdigest()
-        elif not stat.S_ISDIR(info.st_mode):
-            raise Refusal('stop active processes. Unsupported special file: ' + str(path))
-        rows.append((str(path.relative_to(source)), info.st_mode, info.st_dev,
-                     info.st_ino, info.st_size, info.st_mtime_ns, extra))
-    return rows
-
-
-def check_git_metadata(admin, references):
-    def hexadecimal(value, lengths):
-        return len(value) in lengths and all(c in '0123456789abcdef' for c in value)
-    files = {'HEAD', 'config', 'description', 'index', 'packed-refs', 'shallow',
-             'FETCH_HEAD', 'ORIG_HEAD', 'COMMIT_EDITMSG', 'info/exclude',
-             'info/refs', 'info/packs', 'info/commit-graph', 'objects/info/packs',
-             'objects/info/commit-graph', 'objects/pack/multi-pack-index',
-             'objects/info/commit-graphs/commit-graph-chain', 'logs/HEAD'}
-    files.update(references)
-    files.update('logs/' + name for name in references)
-    directories = {'objects', 'objects/info', 'objects/pack', 'refs',
-                   'refs/heads', 'refs/tags', 'refs/remotes', 'logs', 'logs/refs',
-                   'logs/refs/heads', 'logs/refs/remotes', 'info', 'hooks',
-                   'branches', 'objects/info/commit-graphs'}
-    for name in files:
-        directories.update(parent.as_posix() for parent in Path(name).parents
-                           if parent != Path('.'))
-    def failed(error):
-        raise error
-    for base, dirs, names in os.walk(admin, followlinks=False, onerror=failed):
-        for entry in dirs + names:
-            path = Path(base) / entry
-            name = path.relative_to(admin).as_posix()
-            parts = path.relative_to(admin).parts
-            allowed = not path.is_symlink()
-            if path.is_dir():
-                allowed = allowed and (name in directories or
-                    (len(parts) == 2 and parts[0] == 'objects' and hexadecimal(parts[1], {2})))
-            else:
-                standard = name in files
-                if len(parts) == 3 and parts[0] == 'objects':
-                    standard = standard or (hexadecimal(parts[1], {2}) and hexadecimal(parts[2], {38, 62}))
-                    stem, separator, suffix = entry.rpartition('.')
-                    if parts[1] == 'pack':
-                        standard = standard or (bool(separator) and stem.startswith('pack-') and
-                            hexadecimal(stem[5:], {40, 64}) and suffix in {'pack', 'idx', 'rev', 'bitmap'})
-                if len(parts) == 4 and parts[:3] == ('objects', 'info', 'commit-graphs'):
-                    stem, separator, suffix = entry.rpartition('.')
-                    standard = standard or (bool(separator) and stem.startswith('graph-') and
-                        hexadecimal(stem[6:], {40, 64}) and suffix == 'graph')
-                allowed = allowed and path.is_file() and standard
-            if not allowed:
-                raise Refusal('unrecognized Git metadata: ' + repr(name) + '. Keep or quarantine the clone')
-
-
-def removal_check(source, root):
-    project, configured, _ = configuration(root, source.parent)
-    hub_path = project / 'hub.git'
-    if hub_path.is_symlink() or not hub_path.is_dir():
-        raise Refusal('the project hub is missing or is a symlink')
-    hub = inside(hub_path, root)
-    if not Path(configured).is_absolute() or Path(configured).resolve() != hub:
-        raise Refusal('configuration does not select this project hub')
-    if source not in project.parents and project not in source.parents:
-        raise Refusal('the selected clone is outside its project')
-    if source == project or source == hub or source in hub.parents:
-        raise Refusal('normal removal cannot select the project or hub')
-    for parent in source.parents:
-        if parent == project:
-            break
-        if (parent / '.git').exists():
-            raise Refusal('normal removal cannot select a nested repository')
-    if git('rev-parse', '--is-bare-repository', cwd=hub, capture=True) != 'true':
-        raise Refusal('the project hub is not a bare repository')
-    if git('rev-parse', '--is-shallow-repository', cwd=hub, capture=True) != 'false':
-        raise Refusal('normal removal requires a full-history hub')
-    actual_hub = git('rev-parse', '--absolute-git-dir', cwd=hub, capture=True)
-    if Path(actual_hub).resolve() != hub:
-        raise Refusal('the hub redirects its Git storage')
-    if (hub / 'objects').is_symlink() or (hub / 'objects/info/alternates').exists():
-        raise Refusal('the hub uses shared or redirected object storage')
-    for directory, dirs, files in os.walk(hub / 'objects', followlinks=False):
-        if any((Path(directory) / name).is_symlink() for name in dirs + files):
-            raise Refusal('the hub redirects object storage through a symlink')
-        if any(name.endswith('.promisor') for name in files):
-            raise Refusal('the hub depends on promised objects')
-    try:
-        git('fsck', '--full', '--strict', '--no-reflogs', '--no-progress',
-            cwd=hub, capture=True)
-    except Refusal as error:
-        raise Refusal('hub object verification failed. Keep the clone') from error
-    origin = git('remote', 'get-url', 'origin', cwd=source, capture=True)
-    if not Path(origin).is_absolute() or Path(origin).resolve() != hub:
-        raise Refusal('the clone origin does not match the project hub')
-    index = git('ls-files', '-v', '-z', cwd=source, capture=True).split('\0')
-    if any(entry and entry[0] != 'H' for entry in index):
-        raise Refusal('index flags can hide local changes. Keep the clone')
-    if git('--no-optional-locks', '-c', 'core.fsmonitor=false', 'status',
-           '--porcelain=v1', '-uall', '--ignored=matching', cwd=source, capture=True):
-        raise Refusal('local changes or untracked or ignored files remain. Keep the clone')
-    admin = source / '.git'
-    local_refs = git('for-each-ref', '--format=%(refname) %(objectname)',
-                     cwd=source, capture=True).splitlines()
-    check_git_metadata(admin, {row.split(' ', 1)[0] for row in local_refs})
-    objects = {git('rev-parse', '--verify', 'HEAD', cwd=source, capture=True)}
-    for row in local_refs:
-        name, oid = row.split(' ', 1)
-        if name == 'refs/stash':
-            raise Refusal('a local stash remains. Keep or quarantine the clone')
-        if not name.startswith('refs/remotes/'):
-            retained = git('show-ref', '--verify', '--hash', name, cwd=hub, capture=True)
-            if not name.startswith('refs/heads/') and retained != oid:
-                raise Refusal('a local Git reference differs from the hub')
-        objects.add(oid)
-    unreachable = git('fsck', '--full', '--strict', '--no-reflogs',
-                      '--unreachable', '--no-progress',
-                      cwd=source, capture=True).splitlines()
-    for row in unreachable:
-        fields = row.split()
-        if len(fields) != 3 or fields[0] != 'unreachable':
-            raise Refusal('Git object verification returned an unsupported result')
-        objects.add(fields[2])
-    retained_refs = git('for-each-ref', '--format=%(objectname)', cwd=hub, capture=True).splitlines()
-    if not retained_refs:
-        raise Refusal('the hub has no retained references')
-    revisions = sorted(objects) + ['^' + oid for oid in retained_refs]
-    if git('rev-list', '--objects', '--no-object-names', '--stdin', cwd=hub,
-           capture=True, data='\n'.join(revisions) + '\n'):
-        raise Refusal('the hub does not retain all local work. Push or preserve it first')
-    if not shutil.rmtree.avoids_symlink_attacks:
-        raise Refusal('this platform lacks safe directory removal support')
-    selected = source.lstat()
-    hub_info = hub.lstat()
-    return (project, hub, selected.st_dev, selected.st_ino,
-            hub_info.st_dev, hub_info.st_ino, tuple(retained_refs),
-            (project / '.devtrees').read_bytes())
-
-
-def remove_preserved(source, root):
-    checked = removal_check(source, root)
-    resources = inventory(source)
-    if any(row[2] != checked[2] for row in resources):
-        raise Refusal('normal removal cannot cross a filesystem boundary')
-    if removal_check(repository(source, root), root) != checked or inventory(source) != resources:
-        raise Refusal('the clone or hub changed after inspection. Keep the clone')
-    shutil.rmtree(source)
-    if source.exists() or source.is_symlink():
-        raise Refusal('removal was not verified. Inspect the clone and hub')
-    print('Removed:', repr(str(source)))
-    print('Hub retained:', repr(str(checked[1])))
-
-
 def teardown(args, root):
     source = repository(args.path, root)
-    if not args.dry_run and not args.quarantine:
-        remove_preserved(source, root)
+    project, configured, _ = configuration(root, source)
+    if source == project or source == project / 'hub.git':
+        raise Refusal('removal cannot select the project or hub')
+    if Path(configured).is_absolute() and source == Path(configured).resolve():
+        raise Refusal('removal cannot select the configured source repository')
+    if source.is_mount():
+        raise Refusal('removal cannot select a filesystem mount')
+    if not args.please and not args.quarantine:
+        print('Would remove:', repr(str(source)))
+        print('Dry run: nothing changed. Use --please to delete this entire clone.')
+        return
+    if args.please:
+        if not shutil.rmtree.avoids_symlink_attacks:
+            raise Refusal('this platform lacks symlink-resistant directory removal')
+        shutil.rmtree(source)
+        if source.exists() or source.is_symlink():
+            raise Refusal('removal was not verified. Inspect the selected path')
+        print('Removed:', repr(str(source)))
         return
     store = inside(root / '.devtrees-quarantine', root)
-    if store == source or source in store.parents:
-        raise Refusal('quarantine storage cannot be inside the selected clone')
-    if (root / '.devtrees-quarantine').is_symlink():
-        raise Refusal('quarantine storage must not be a symlink')
+    if store == source or source in store.parents or store.is_symlink():
+        raise Refusal('quarantine storage must be separate from the selected clone')
     if store.exists() and (not store.is_dir() or (store / '.git').exists()):
         raise Refusal('quarantine storage is occupied by another resource')
-    if source.is_mount() or source.stat().st_dev != root.stat().st_dev:
+    identity = (source.stat().st_dev, source.stat().st_ino)
+    if identity[0] != root.stat().st_dev or (store.exists() and store.stat().st_dev != identity[0]):
         raise Refusal('quarantine requires the same filesystem. No copy/delete fallback is available')
-    if store.exists() and store.stat().st_dev != source.stat().st_dev:
-        raise Refusal('quarantine storage is on a different filesystem')
     container = store / uuid.uuid4().hex
     destination = container / source.name
-    changes = git('--no-optional-locks', 'status', '--porcelain=v1', '-uall',
-                  cwd=source, capture=True)
-    resources = inventory(source)
     print('Source:', repr(str(source)))
     print('Quarantine:', repr(str(destination)))
     print('Restore: mv -n -- ' + shlex.quote(str(destination)) + ' ' + shlex.quote(str(source)))
-    print('Git changes:', repr(changes))
-    print('Resources:', len(resources), 'entries. Regular-file bytes:',
-          sum(row[4] for row in resources if stat.S_ISREG(row[1])))
-    for row in resources:
-        print(repr(row[0]), oct(row[1]), row[4], repr(row[6]))
-    if not args.quarantine:
-        print('Dry run: nothing moved. Normal removal requires preserved work. Quarantine requires terminal approval.')
-        return
     if not sys.stdin.isatty():
         raise Refusal('quarantine requires a real terminal. Noninteractive input cannot approve it')
-    reply = input('Stop writers to this clone. Type quarantine to move exactly these resources: ')
-    if reply != 'quarantine':
+    if input('Stop writers. Type quarantine to move this clone: ') != 'quarantine':
         print('Cancelled: source retained.')
         return
-    if repository(args.path, root) != source or inventory(source) != resources:
-        raise Refusal('source changed after the plan. The source remains in place')
-    if container.exists() or container.is_symlink():
-        raise Refusal('the destination is occupied. The source remains in place')
+    if repository(args.path, root) != source or (source.stat().st_dev, source.stat().st_ino) != identity:
+        raise Refusal('the selected clone changed. Inspect the source')
     store.mkdir(exist_ok=True)
-    if store.is_symlink() or inside(store, root) != store or store.stat().st_dev != source.stat().st_dev:
+    if store.is_symlink() or inside(store, root) != store or store.stat().st_dev != identity[0]:
         raise Refusal('quarantine storage changed. The source remains in place')
     container.mkdir(mode=0o700)
     result = subprocess.run(['mv', '-n', str(source), str(destination)], cwd=root)
     if (result.returncode or source.exists() or not destination.is_dir()
-            or inventory(destination) != resources):
-        raise Refusal('quarantine could not be verified. Inspect both reported paths. No files were deleted')
+            or (destination.stat().st_dev, destination.stat().st_ino) != identity):
+        raise Refusal('quarantine could not be verified. Inspect both reported paths')
     print('Quarantined:', repr(str(destination)))
 
 
@@ -409,10 +238,11 @@ def parser():
     handoff.add_argument('remote')
     handoff.add_argument('refspec', nargs='*')
     handoff.set_defaults(handler=push)
-    remove = commands.add_parser('remove', aliases=['teardown'], help='remove a preserved clone, inspect it, or quarantine it')
+    remove = commands.add_parser('remove', aliases=['teardown'], help='preview, delete, or quarantine a selected clone')
     remove.add_argument('path')
     mode = remove.add_mutually_exclusive_group()
-    mode.add_argument('--dry-run', action='store_true')
+    mode.add_argument('--dry-run', action='store_true', help='preview removal (default)')
+    mode.add_argument('--please', action='store_true', help='delete the entire selected clone (caller confirms readiness)')
     mode.add_argument('--quarantine', action='store_true')
     remove.set_defaults(handler=teardown)
     return result

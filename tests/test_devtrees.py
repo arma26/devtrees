@@ -1,8 +1,6 @@
 import os
 from pathlib import Path
 import subprocess
-import shutil
-import shlex
 import sys
 import tempfile
 import unittest
@@ -191,6 +189,35 @@ class StorageTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(outside.exists())
 
+    def test_removal_readiness_belongs_to_the_harness(self):
+        _, clone = self.setup_clone()
+        (clone / 'tracked.txt').write_text('uncommitted work\n')
+        (clone / 'untracked.txt').write_text('local file\n')
+        (clone / '.git/local-notes.txt').write_text('private records\n')
+        result = self.cli('remove', '--please', clone)
+        self.assertIn('DELETION_ATTEMPT: ' + str(clone), result.stderr)
+        self.assertTrue(clone.is_dir())
+
+    def test_add_uses_normal_git_templates(self):
+        templates = self.fixture / 'templates'
+        templates.mkdir()
+        (templates / 'template-note.txt').write_text('standard Git template handling\n')
+        self.env['GIT_TEMPLATE_DIR'] = str(templates)
+        _, clone = self.setup_clone()
+        self.assertTrue((clone / '.git/template-note.txt').is_file())
+        self.assertEqual((clone / '.git/template-note.txt').read_text(),
+                         'standard Git template handling\n')
+
+    def test_removal_defaults_to_dry_run(self):
+        workspace, clone = self.setup_clone()
+        for command in ('remove', 'teardown'):
+            result = self.cli(command, clone)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('Dry run', result.stdout)
+            self.assertTrue(clone.is_dir())
+            self.assertTrue((workspace / 'hub.git').is_dir())
+            self.assertNotIn('DELETION_ATTEMPT:', result.stderr)
+
     def test_explicit_dry_run_preserves_local_data(self):
         workspace, clone = self.setup_clone()
         marker = clone / 'untracked.txt'
@@ -198,143 +225,43 @@ class StorageTests(unittest.TestCase):
         result = self.cli('remove', '--dry-run', clone)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('Dry run', result.stdout)
-        self.assertIn('untracked.txt', result.stdout)
-        self.assertIn('Restore:', result.stdout)
+        self.assertIn(repr(str(clone)), result.stdout)
         self.assertEqual(marker.read_text(), 'retain this data\n')
         self.assertFalse((self.root / '.devtrees-quarantine').exists())
         self.assertEqual({p.name for p in workspace.iterdir()}, {'.devtrees', 'hub.git', clone.name})
 
-    def pushed_clone(self):
+    def test_removal_protects_project_hub_and_root(self):
         workspace, clone = self.setup_clone()
-        self.git('-C', str(clone), 'push', 'origin', 'task-a')
-        return workspace, clone
+        self.git('init', '-q', str(workspace))
+        before = (workspace / '.devtrees').read_bytes()
+        for target in (workspace, workspace / 'hub.git', self.root):
+            result = self.cli('remove', '--please', target)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertNotIn('DELETION_ATTEMPT:', result.stderr)
+            self.assertTrue(target.is_dir())
+        self.assertTrue(clone.is_dir())
+        self.assertEqual((workspace / '.devtrees').read_bytes(), before)
 
-    def assert_removal_refused(self, clone):
-        result = self.cli('remove', clone)
-        self.assertNotEqual(result.returncode, 0, result.stderr)
-        self.assertNotIn('DELETION_ATTEMPT:', result.stderr)
-        self.assertTrue(clone.exists())
-        return result
+    def test_removal_refuses_outside_paths_and_selected_symlinks(self):
+        _, clone = self.setup_clone()
+        alias = self.root / 'alias'
+        alias.symlink_to(clone, target_is_directory=True)
+        outside = self.fixture / 'outside-clone'
+        self.git('clone', '-q', str(self.remote), str(outside))
+        for target in (alias, outside):
+            result = self.cli('remove', '--please', target)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertNotIn('DELETION_ATTEMPT:', result.stderr)
+        self.assertTrue(clone.is_dir())
+        self.assertTrue(outside.is_dir())
 
-    def test_preserved_clone_reaches_only_selected_removal(self):
-        workspace, clone = self.pushed_clone()
-        result = self.cli('remove', clone)
-        self.assertIn('DELETION_ATTEMPT: ' + str(clone), result.stderr)
-        self.assertTrue(clone.exists())
-        self.assertTrue((workspace / 'hub.git').is_dir())
-        self.assertTrue((workspace / '.devtrees').is_file())
-
-    def test_uncommitted_data_refuses_normal_removal(self):
-        _, clone = self.pushed_clone()
-        (clone / 'tracked.txt').write_text('local changes\n')
-        self.assert_removal_refused(clone)
-        self.assertEqual((clone / 'tracked.txt').read_text(), 'local changes\n')
-
-    def test_unpushed_commit_refuses_normal_removal(self):
-        _, clone = self.pushed_clone()
-        (clone / 'tracked.txt').write_text('committed only here\n')
-        self.git('-C', str(clone), 'commit', '-qam', 'Local work')
-        self.assert_removal_refused(clone)
-
-    def test_ignored_file_refuses_normal_removal(self):
-        _, clone = self.pushed_clone()
-        (clone / '.gitignore').write_text('private.txt\n')
-        self.git('-C', str(clone), 'add', '.gitignore')
-        self.git('-C', str(clone), 'commit', '-qm', 'Ignore private data')
-        self.git('-C', str(clone), 'push', 'origin', 'task-a')
-        (clone / 'private.txt').write_text('not in Git\n')
-        self.assert_removal_refused(clone)
-
-    def test_stash_refuses_normal_removal(self):
-        _, clone = self.pushed_clone()
-        (clone / 'tracked.txt').write_text('stashed data\n')
-        self.git('-C', str(clone), 'stash', 'push', '-qm', 'Keep local work')
-        self.assert_removal_refused(clone)
-
-    def test_foreign_clone_refuses_normal_removal(self):
-        workspace, _ = self.setup_clone()
-        foreign = workspace / 'foreign'
-        self.git('clone', '-q', '--no-local', str(self.remote), str(foreign))
-        self.assert_removal_refused(foreign)
-
-    def test_missing_hub_configuration_refuses_normal_removal(self):
-        workspace, clone = self.pushed_clone()
-        config = workspace / '.devtrees'
-        saved = config.read_bytes()
-        (workspace / '.devtrees-before-test').write_bytes(saved)
-        self.assertEqual((workspace / '.devtrees-before-test').read_bytes(), saved)
-        config.write_text('export devtrees_repo=' + repr(str(workspace / 'missing.git')) + '\n')
-        self.assert_removal_refused(clone)
-        self.assertTrue((workspace / 'hub.git').is_dir())
-
-    def test_assume_unchanged_cannot_hide_local_work_from_removal(self):
-        _, clone = self.pushed_clone()
-        self.git('-C', str(clone), 'update-index', '--assume-unchanged', 'tracked.txt')
-        (clone / 'tracked.txt').write_text('hidden local work\n')
-        self.assert_removal_refused(clone)
-
-    def test_skip_worktree_cannot_hide_local_work_from_removal(self):
-        _, clone = self.pushed_clone()
-        self.git('-C', str(clone), 'update-index', '--skip-worktree', 'tracked.txt')
-        (clone / 'tracked.txt').write_text('hidden local work\n')
-        self.assert_removal_refused(clone)
-
-    def test_private_legacy_branch_data_refuses_normal_removal(self):
-        _, clone = self.pushed_clone()
-        directory = clone / '.git/branches'
-        directory.mkdir(exist_ok=True)
-        (directory / 'local-notes.txt').write_text('private notes\n')
-        self.assert_removal_refused(clone)
-
-    def test_private_sample_hook_refuses_normal_removal(self):
-        _, clone = self.pushed_clone()
-        directory = clone / '.git/hooks'
-        directory.mkdir(exist_ok=True)
-        (directory / 'private-work.sample').write_text('private unfinished hook\n')
-        self.assert_removal_refused(clone)
-
-    def test_incomplete_hub_objects_refuse_normal_removal(self):
-        complete = self.fixture / 'complete.git'
-        self.git('clone', '-q', '--bare', '--template=', '--local', '--no-hardlinks',
-                 str(self.seed), str(complete))
-        oid = self.git('-C', str(self.seed), 'rev-parse', 'HEAD:tracked.txt').strip()
-        missing = complete / 'objects' / oid[:2] / oid[2:]
-        self.assertTrue(missing.is_file())
-        workspace = self.root / 'project'
-        workspace.mkdir()
-        hub = workspace / 'hub.git'
-        def omit_one_blob(directory, names):
-            return [oid[2:]] if Path(directory) == missing.parent else []
-        shutil.copytree(complete, hub, ignore=omit_one_blob)
-        self.assertTrue(missing.is_file())
-        self.assertFalse((hub / 'objects' / oid[:2] / oid[2:]).exists())
-        (workspace / '.devtrees').write_text(
-            'export devtrees_repo=' + shlex.quote(str(hub)) + '\n')
-        clone = workspace / 'task'
-        self.git('clone', '-q', '--template=', '--no-local', '--no-hardlinks',
-                 str(complete), str(clone))
-        self.git('-C', str(clone), 'remote', 'set-url', 'origin', str(hub))
-        self.assert_removal_refused(clone)
-        self.assertEqual((clone / 'tracked.txt').read_text(), 'initial\n')
-
-    def test_private_object_information_refuses_normal_removal(self):
-        _, clone = self.pushed_clone()
-        directory = clone / '.git/objects/info'
-        directory.mkdir(exist_ok=True)
-        (directory / 'local-notes.txt').write_text('private object notes\n')
-        self.assert_removal_refused(clone)
-
-    def test_private_log_information_refuses_normal_removal(self):
-        _, clone = self.pushed_clone()
-        directory = clone / '.git/logs'
-        directory.mkdir(exist_ok=True)
-        (directory / 'local-notes.txt').write_text('private log notes\n')
-        self.assert_removal_refused(clone)
-
-    def test_private_git_data_refuses_normal_removal(self):
-        _, clone = self.pushed_clone()
-        (clone / '.git/local-notes.txt').write_text('private notes\n')
-        self.assert_removal_refused(clone)
+    def test_removal_modes_are_mutually_exclusive(self):
+        _, clone = self.setup_clone()
+        for flags in (('--please', '--dry-run'), ('--please', '--quarantine'), ('--execute',)):
+            result = self.cli('remove', clone, *flags)
+            self.assertEqual(result.returncode, 2)
+            self.assertNotIn('DELETION_ATTEMPT:', result.stderr)
+            self.assertTrue(clone.is_dir())
 
     def test_noninteractive_quarantine_cannot_approve_itself(self):
         _, clone = self.setup_clone()
@@ -353,14 +280,14 @@ class StorageTests(unittest.TestCase):
         self.assertIn('symlink', result.stderr)
         self.assertTrue(clone.exists())
 
-    def test_teardown_quotes_symlink_targets(self):
+    def test_preview_does_not_inspect_clone_contents(self):
         _, clone = self.setup_clone()
         target = 'missing\npretend approval'
         (clone / 'odd-link').symlink_to(target)
         result = self.cli('remove', '--dry-run', clone)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn(repr(target), result.stdout)
-        self.assertNotIn(target, result.stdout)
+        self.assertNotIn(repr(target), result.stdout)
+        self.assertEqual(os.readlink(clone / 'odd-link'), target)
 
     def test_setup_clone_and_native_git_push_without_registry(self):
         workspace, clone = self.setup_clone()
